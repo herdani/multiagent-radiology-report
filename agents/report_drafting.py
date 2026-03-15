@@ -24,7 +24,7 @@ class RadiologyReport:
     impression: str
     recommendations: str
     urgency_level: str
-    report_text: str              # full formatted report
+    report_text: str
     draft_version: int = 1
 
 
@@ -49,36 +49,97 @@ Use professional radiological language. Be concise and precise.
 Do not invent findings not supported by the image analysis."""
 
 
+def _parse_report_sections(raw: str) -> dict:
+    """
+    Parse raw LLM report text into sections.
+    Handles multiline sections correctly.
+    """
+    sections = {
+        "clinical_indication": "",
+        "technique": "",
+        "findings": "",
+        "impression": "",
+        "recommendations": "",
+    }
+
+    # map header keywords to section keys
+    headers = {
+        "CLINICAL INDICATION": "clinical_indication",
+        "TECHNIQUE": "technique",
+        "FINDINGS": "findings",
+        "IMPRESSION": "impression",
+        "RECOMMENDATIONS": "recommendations",
+    }
+
+    current_key = None
+    buffer = []
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper().rstrip(":")
+
+        # check if this line is a section header
+        matched_header = None
+        for header, key in headers.items():
+            if upper == header or stripped.upper().startswith(header + ":"):
+                matched_header = key
+                break
+
+        if matched_header:
+            # save previous section
+            if current_key and buffer:
+                sections[current_key] = "\n".join(buffer).strip()
+                buffer = []
+            current_key = matched_header
+            # handle inline content after the header (e.g. "TECHNIQUE: MRI...")
+            inline = stripped.split(":", 1)
+            if len(inline) > 1 and inline[1].strip():
+                buffer.append(inline[1].strip())
+        elif current_key and stripped:
+            buffer.append(stripped)
+
+    # save last section
+    if current_key and buffer:
+        sections[current_key] = "\n".join(buffer).strip()
+
+    return sections
+
+
 def _format_mock_report(
     image_findings: ImageFindings,
     context: ClinicalContext,
 ) -> RadiologyReport:
     logger.info("Mode: MOCK report drafting | anon_id=%s", image_findings.anonymized_id)
 
+    clinical_indication = f"Routine {image_findings.modality} examination."
+    technique = f"Standard {image_findings.modality} acquisition without contrast."
+    findings = "\n".join(f"- {f}" for f in image_findings.findings)
+    impression = f"1. {image_findings.impression}\n2. No acute findings identified."
+    recommendations = "\n".join(f"- {r}" for r in context.recommended_followup)
+
     report_text = f"""CLINICAL INDICATION:
-Routine {image_findings.modality} examination.
+{clinical_indication}
 
 TECHNIQUE:
-Standard {image_findings.modality} acquisition without contrast.
+{technique}
 
 FINDINGS:
-{chr(10).join(f"- {f}" for f in image_findings.findings)}
+{findings}
 
 IMPRESSION:
-1. {image_findings.impression}
-2. No acute findings identified.
+{impression}
 
 RECOMMENDATIONS:
-{chr(10).join(f"- {r}" for r in context.recommended_followup)}"""
+{recommendations}"""
 
     return RadiologyReport(
         anonymized_id=image_findings.anonymized_id,
         modality=image_findings.modality,
-        clinical_indication=f"Routine {image_findings.modality} examination.",
-        technique=f"Standard {image_findings.modality} acquisition without contrast.",
-        findings="\n".join(image_findings.findings),
-        impression=image_findings.impression,
-        recommendations="\n".join(context.recommended_followup),
+        clinical_indication=clinical_indication,
+        technique=technique,
+        findings=findings,
+        impression=impression,
+        recommendations=recommendations,
         urgency_level=context.urgency_level,
         report_text=report_text,
     )
@@ -93,7 +154,6 @@ def _llm_report(
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
 
-    # use OpenRouter if available
     if os.environ.get("OPENROUTER_API_KEY", "your-openrouter-key") != "your-openrouter-key":
         client = OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
@@ -106,6 +166,7 @@ def _llm_report(
     user_prompt = f"""Generate a radiology report based on:
 
 MODALITY: {image_findings.modality}
+
 IMAGE FINDINGS:
 {chr(10).join(f"- {f}" for f in image_findings.findings)}
 
@@ -129,7 +190,6 @@ Follow the exact report structure specified."""
         max_tokens=4096,
     )
 
-    # handle thinking models
     message = response.choices[0].message
     raw = message.content or ""
     if not raw.strip():
@@ -140,40 +200,22 @@ Follow the exact report structure specified."""
         else:
             raw = reasoning
 
-    # parse sections
-    sections = {
-        "clinical_indication": "",
-        "technique": "",
-        "findings": "",
-        "impression": "",
-        "recommendations": "",
-    }
+    sections = _parse_report_sections(raw)
 
-    current_section = None
-    lines = raw.strip().splitlines()
-    for line in lines:
-        line_upper = line.strip().upper()
-        if "CLINICAL INDICATION:" in line_upper:
-            current_section = "clinical_indication"
-        elif "TECHNIQUE:" in line_upper:
-            current_section = "technique"
-        elif "FINDINGS:" in line_upper:
-            current_section = "findings"
-        elif "IMPRESSION:" in line_upper:
-            current_section = "impression"
-        elif "RECOMMENDATIONS:" in line_upper:
-            current_section = "recommendations"
-        elif current_section and line.strip():
-            sections[current_section] += line.strip() + "\n"
+    # fallback — if parser missed sections, use mock
+    empty_sections = [k for k, v in sections.items() if not v.strip()]
+    if empty_sections:
+        logger.warning("LLM report missing sections %s — using mock fallback", empty_sections)
+        return _format_mock_report(image_findings, context)
 
     return RadiologyReport(
         anonymized_id=image_findings.anonymized_id,
         modality=image_findings.modality,
-        clinical_indication=sections["clinical_indication"].strip(),
-        technique=sections["technique"].strip(),
-        findings=sections["findings"].strip(),
-        impression=sections["impression"].strip(),
-        recommendations=sections["recommendations"].strip(),
+        clinical_indication=sections["clinical_indication"],
+        technique=sections["technique"],
+        findings=sections["findings"],
+        impression=sections["impression"],
+        recommendations=sections["recommendations"],
         urgency_level=context.urgency_level,
         report_text=raw.strip(),
     )
