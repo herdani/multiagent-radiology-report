@@ -8,6 +8,7 @@ from api.models.database import init_db
 from api.routes.health import router as health_router
 from api.routes.reports import router as reports_router
 from api.routes.pipeline import router as pipeline_router
+from api.routes.compliance import router as compliance_router
 
 logger = logging.getLogger(__name__)
 
@@ -44,3 +45,4 @@ app.mount("/metrics", metrics_app)
 app.include_router(health_router)
 app.include_router(reports_router)
 app.include_router(pipeline_router)
+app.include_router(compliance_router)
