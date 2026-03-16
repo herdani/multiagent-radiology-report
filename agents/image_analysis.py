@@ -123,7 +123,7 @@ def _ollama_analysis(png_path: str, anonymized_id: str, modality: str) -> ImageF
     model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
-    client = OpenAI(api_key="ollama", base_url=base_url)
+    client = OpenAI(api_key="ollama", base_url=base_url, timeout=300.0)
     image_b64 = _encode_image(png_path)
 
     logger.info("Mode: OLLAMA | model=%s | anon_id=%s", model, anonymized_id)
@@ -198,3 +198,49 @@ def run(png_path: str, anonymized_id: str, modality: str = "CR") -> ImageFinding
         return _openrouter_analysis(png_path, anonymized_id, modality)
     else:
         return _mock_analysis(anonymized_id, modality)
+
+
+def run_with_xai(
+    png_path: str,
+    anonymized_id: str,
+    modality: str = "CR",
+) -> tuple:
+    """
+    Run image analysis AND generate XAI heatmap concurrently.
+    XAI runs in a background thread — never blocks the main pipeline.
+    """
+    import threading
+    from pipeline.xai import generate_heatmap
+
+    # start XAI in background thread immediately
+    xai_result = {}
+    def run_xai():
+        chest_modalities = ["CR", "DX", "CT"]
+        if modality.upper() in chest_modalities:
+            result = generate_heatmap(png_path)
+            xai_result.update(result)
+
+    xai_thread = threading.Thread(target=run_xai, daemon=True)
+    xai_thread.start()
+
+    # run main image analysis (this is the slow Qwen call)
+    findings = run(png_path, anonymized_id, modality)
+
+    # wait for XAI to finish (max 60 seconds)
+    xai_thread.join(timeout=60)
+
+    # add pathology scores to findings if available
+    if xai_result.get("pathology_scores"):
+        top_findings = sorted(
+            xai_result["pathology_scores"].items(),
+            key=lambda x: x[1], reverse=True,
+        )[:3]
+        score_text = ", ".join(
+            f"{k}: {v:.0%}" for k, v in top_findings if v > 0.1
+        )
+        if score_text:
+            findings.findings.append(
+                f"TorchXRayVision detection scores: {score_text}"
+            )
+
+    return findings, xai_result

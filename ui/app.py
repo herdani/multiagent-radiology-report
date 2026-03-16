@@ -1,5 +1,6 @@
 """
-Gradio UI — Radiology AI with Human-in-the-Loop
+Gradio UI — Radiology AI
+Mandatory human-in-the-loop: every report requires radiologist review.
 """
 import logging
 import os
@@ -12,17 +13,30 @@ logger = logging.getLogger(__name__)
 
 from pipeline.preprocessor import preprocess
 from agents.orchestrator import run_pipeline, resume_pipeline
+from agents.image_analysis import run_with_xai
 
 
 def process_scan(dicom_file, modality: str):
     if dicom_file is None:
-        return None, "", "", "", "", "⚠️ Please upload a DICOM file.", gr.update(visible=False)
+        return (
+            None, None, "", "", "", "",
+            "⚠️ Please upload a DICOM file.",
+            gr.update(visible=False),
+        )
 
     try:
-        result = preprocess(dicom_path=dicom_file.name, output_dir="data/processed")
+        result        = preprocess(dicom_path=dicom_file.name, output_dir="data/processed")
         png_path      = result["png_path"]
         anonymized_id = result["anonymized_id"]
 
+        # run XAI + image analysis
+        findings, xai_result = run_with_xai(
+            png_path=png_path,
+            anonymized_id=anonymized_id,
+            modality=modality,
+        )
+
+        # run full pipeline — HIL always on
         state, thread_id = run_pipeline(
             png_path=png_path,
             anonymized_id=anonymized_id,
@@ -30,54 +44,53 @@ def process_scan(dicom_file, modality: str):
             hil=True,
         )
 
-        report_text = ""
-        qa_summary  = ""
-        status      = state.get("status", "unknown")
-        show_hil    = False
+        report_text = state["report"].report_text if state.get("report") else ""
+        validation  = state.get("validation")
 
-        if state.get("report"):
-            report_text = state["report"].report_text
-
-        if state.get("validation"):
-            v = state["validation"]
-            qa_summary = f"{'✅ Passed' if v.passed else '⚠️ Failed'} — Score: {v.score}\n"
-            if v.issues:
-                qa_summary += f"Issues: {', '.join(v.issues)}\n"
-            if v.warnings:
-                qa_summary += f"Warnings: {', '.join(v.warnings)}\n"
-            if v.requires_human_review:
-                qa_summary += "🔴 Flagged for human review"
-                show_hil = True
-
-        if status == "complete":
-            status_msg = "✅ Pipeline complete — report ready"
-        elif status in ("interrupted", "qa_failed", "validated"):
-            if show_hil:
-                status_msg = "⏸️ Awaiting radiologist review"
-            else:
-                status_msg = "✅ Pipeline complete — report ready"
+        # QA summary
+        if validation:
+            qa_summary = f"{'✅ Passed' if validation.passed else '⚠️ Failed'} — Score: {validation.score}\n"
+            if validation.issues:
+                qa_summary += f"Issues: {', '.join(validation.issues)}\n"
+            if validation.warnings:
+                qa_summary += f"Warnings: {', '.join(validation.warnings)}\n"
         else:
-            status_msg = f"ℹ️ Status: {status}"
+            qa_summary = "QA not available"
 
+        # scan info + pathology scores
         scan_info = (
             f"Modality: {modality} | "
             f"Urgency: {state['report'].urgency_level if state.get('report') else 'N/A'} | "
             f"ID: {anonymized_id}"
         )
 
+        scores = xai_result.get("pathology_scores", {})
+        if scores:
+            top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
+            scan_info += "\n\nAI Detection Scores:\n"
+            scan_info += "\n".join(f"  {k}: {v:.1%}" for k, v in top if v > 0.05)
+
+        heatmap_path = xai_result.get("heatmap_path") if xai_result.get("heatmap_path") and \
+            os.path.exists(xai_result.get("heatmap_path", "")) else None
+
         return (
             png_path,
+            heatmap_path,
             report_text,
             qa_summary,
             scan_info,
             thread_id,
-            status_msg,
-            gr.update(visible=show_hil),
+            "⏸️ Awaiting radiologist review — please review, edit if needed, then approve or reject.",
+            gr.update(visible=True),   # HIL panel ALWAYS visible
         )
 
     except Exception as e:
         logger.error("UI error: %s", e, exc_info=True)
-        return None, "", "", "", "", f"❌ Error: {str(e)}", gr.update(visible=False)
+        return (
+            None, None, "", "", "", "",
+            f"❌ Error: {str(e)}",
+            gr.update(visible=False),
+        )
 
 
 def approve_report(report_text: str, thread_id: str):
@@ -90,12 +103,12 @@ def approve_report(report_text: str, thread_id: str):
             approved=True,
         )
         return (
-            f"✅ Report approved and saved. ID: {thread_id} | Status: {final_state.get('status')}",
+            f"✅ Report approved and saved. ID: {thread_id}",
             gr.update(visible=False),
         )
     except Exception as e:
         logger.error("Approve error: %s", e, exc_info=True)
-        return f"❌ Error approving: {str(e)}", gr.update(visible=True)
+        return f"❌ Error: {str(e)}", gr.update(visible=True)
 
 
 def reject_report(thread_id: str):
@@ -106,16 +119,17 @@ def reject_report(thread_id: str):
         return f"❌ Error: {str(e)}", gr.update(visible=True)
 
 
-# ── UI ────────────────────────────────────────────────────────────────────────
 with gr.Blocks(title="Radiology AI") as demo:
 
     gr.Markdown("""
     # 🏥 Radiology AI — Multi-Agent Report Generation
-    Upload a DICOM scan to generate an AI-assisted radiology report.
+    Upload a DICOM scan for AI-assisted radiology report generation.
     All patient data is anonymized on upload (GDPR compliant).
+    **Every report requires radiologist review before finalization.**
     """)
 
     with gr.Row():
+        # left column
         with gr.Column(scale=1):
             gr.Markdown("### Upload Scan")
             dicom_input    = gr.File(label="DICOM file (.dcm)", file_types=[".dcm"])
@@ -124,32 +138,52 @@ with gr.Blocks(title="Radiology AI") as demo:
                 value="CR", label="Modality",
             )
             analyze_btn = gr.Button("🔍 Analyze Scan", variant="primary")
-            gr.Markdown("### Scan Preview")
-            scan_image  = gr.Image(label="Preprocessed scan (512x512)", type="filepath")
-            scan_info   = gr.Textbox(label="Scan info", interactive=False)
 
+            gr.Markdown("### Scan")
+            scan_image    = gr.Image(label="Original scan", type="filepath")
+
+            gr.Markdown("### XAI Heatmap")
+            heatmap_image = gr.Image(
+                label="Grad-CAM (red = model focused here)",
+                type="filepath",
+            )
+            scan_info = gr.Textbox(
+                label="Scan info + detection scores",
+                lines=8, interactive=False,
+            )
+
+        # right column
         with gr.Column(scale=1):
             gr.Markdown("### AI Generated Report")
-            status_box   = gr.Textbox(label="Status", interactive=False)
-            report_box   = gr.Textbox(
-                label="Radiology report (editable before approving)",
+            status_box  = gr.Textbox(label="Status", interactive=False)
+            report_box  = gr.Textbox(
+                label="Radiology report — review and edit before approving",
                 lines=16, interactive=True,
             )
-            qa_box       = gr.Textbox(label="QA validation", lines=5, interactive=False)
+            qa_box      = gr.Textbox(label="QA validation", lines=4, interactive=False)
             thread_state = gr.State("")
 
+            # HIL panel — always visible after analysis
             with gr.Group(visible=False) as hil_panel:
-                gr.Markdown("### 👨‍⚕️ Radiologist Review Required")
-                gr.Markdown("You can edit the report above before approving.")
+                gr.Markdown("### 👨‍⚕️ Radiologist Review")
+                gr.Markdown(
+                    "Review the AI-generated report above. "
+                    "Edit directly in the text box if needed, then approve or reject. "
+                    "**No report is finalized without your approval.**"
+                )
                 with gr.Row():
-                    approve_btn = gr.Button("✅ Approve Report", variant="primary")
-                    reject_btn  = gr.Button("🔴 Reject", variant="stop")
-                action_output = gr.Textbox(label="Action result", interactive=False)
+                    approve_btn = gr.Button("✅ Approve & Finalize", variant="primary")
+                    reject_btn  = gr.Button("🔴 Reject & Discard", variant="stop")
+                action_output = gr.Textbox(label="Result", interactive=False)
 
     analyze_btn.click(
         fn=process_scan,
         inputs=[dicom_input, modality_input],
-        outputs=[scan_image, report_box, qa_box, scan_info, thread_state, status_box, hil_panel],
+        outputs=[
+            scan_image, heatmap_image, report_box,
+            qa_box, scan_info, thread_state,
+            status_box, hil_panel,
+        ],
     )
     approve_btn.click(
         fn=approve_report,
@@ -162,7 +196,12 @@ with gr.Blocks(title="Radiology AI") as demo:
         outputs=[action_output, hil_panel],
     )
 
-    gr.Markdown("---\n*AI-generated reports must be reviewed by a qualified radiologist.*")
+    gr.Markdown(
+        "---\n"
+        "*This system is an AI assistant for radiologists. "
+        "All reports must be reviewed and approved by a qualified radiologist "
+        "before clinical use. EU AI Act compliant — human oversight mandatory.*"
+    )
 
 
 if __name__ == "__main__":

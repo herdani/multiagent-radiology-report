@@ -161,7 +161,7 @@ def _llm_report(
         )
         model = os.environ.get("LLM_MODEL", "qwen/qwen2.5-vl-72b-instruct")
     else:
-        client = OpenAI(api_key="ollama", base_url=base_url)
+        client = OpenAI(api_key="ollama", base_url=base_url, timeout=300.0)
 
     user_prompt = f"""Generate a radiology report based on:
 

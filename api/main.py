@@ -31,6 +31,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# your medical middleware — one line does GDPR + rate limiting + security headers
+try:
+    from medical_middleware import setup_middleware
+    from medical_middleware.config import MiddlewareConfig
+    setup_middleware(app, MiddlewareConfig(
+        data_retention_seconds=7776000,   # 90 days
+        require_consent_header=False,     # we handle consent in UI
+        rate_limit_predict="10/minute",
+        rate_limit_default="30/minute",
+        app_name="radiology-ai",
+    ))
+    logger.info("Medical middleware loaded — GDPR + rate limiting active")
+except ImportError:
+    logger.warning("medical-ai-middleware not installed — skipping")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:7860"],

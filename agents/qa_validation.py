@@ -1,15 +1,12 @@
 """
 QA Validation Agent
 --------------------
-Reviews the drafted report for:
-  - Completeness (all sections present)
-  - Consistency (findings match impression)
-  - Hallucinations (claims not supported by image analysis)
-  - Urgency flags (critical findings not flagged)
-  - Formatting (standard radiology report structure)
+Reviews the drafted report for completeness, consistency,
+urgency flags, and potential hallucinations.
 """
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 from agents.image_analysis import ImageFindings
@@ -25,15 +22,28 @@ REQUIRED_SECTIONS = [
     "recommendations",
 ]
 
+# only flag if these appear WITHOUT negation nearby
+URGENT_KEYWORDS = [
+    "pneumothorax", "tension", "hemorrhage", "haemorrhage",
+    "infarct", "embolism", "dissection", "rupture",
+    "obstruction", "malignancy", "critical",
+]
+
+# negation words that indicate finding is absent
+NEGATION_WORDS = [
+    "no ", "not ", "without ", "absent ", "negative ",
+    "clear of", "no evidence", "unremarkable",
+]
+
 
 @dataclass
 class ValidationResult:
-    anonymized_id: str
-    passed: bool
-    score: float                    # 0.0 - 1.0
-    issues: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    approved_report: str = ""       # final report text after QA
+    anonymized_id:        str
+    passed:               bool
+    score:                float
+    issues:               list[str] = field(default_factory=list)
+    warnings:             list[str] = field(default_factory=list)
+    approved_report:      str = ""
     requires_human_review: bool = False
 
 
@@ -47,29 +57,40 @@ def _check_completeness(report: RadiologyReport) -> list[str]:
     return issues
 
 
+def _is_negated(keyword: str, text: str) -> bool:
+    """Check if a keyword is negated in the surrounding context."""
+    idx = text.find(keyword)
+    if idx == -1:
+        return False
+    # look at 50 chars before the keyword for negation
+    context = text[max(0, idx - 50):idx].lower()
+    return any(neg in context for neg in NEGATION_WORDS)
+
+
 def _check_urgency(
     report: RadiologyReport,
     image_findings: ImageFindings,
 ) -> list[str]:
-    """Check that urgent findings are properly flagged."""
+    """Check urgent findings are properly flagged — with negation awareness."""
     warnings = []
-    urgent_keywords = [
-        "pneumothorax", "tension", "hemorrhage", "infarct",
-        "embolism", "dissection", "rupture", "obstruction",
-        "mass", "malignancy", "critical"
-    ]
-
     report_lower = report.report_text.lower()
-    found_urgent = [kw for kw in urgent_keywords if kw in report_lower]
+
+    # only flag keywords that are NOT negated
+    found_urgent = [
+        kw for kw in URGENT_KEYWORDS
+        if kw in report_lower and not _is_negated(kw, report_lower)
+    ]
 
     if found_urgent and report.urgency_level == "routine":
         warnings.append(
-            f"Potentially urgent keywords found ({', '.join(found_urgent)}) "
-            f"but urgency is marked as routine — human review required"
+            f"Urgent findings detected ({', '.join(found_urgent)}) "
+            f"but urgency marked as routine — human review required"
         )
 
     if image_findings.flagged and report.urgency_level == "routine":
-        warnings.append("Image analysis flagged findings but report urgency is routine")
+        warnings.append(
+            "Image analysis flagged findings but report urgency is routine"
+        )
 
     return warnings
 
@@ -80,20 +101,37 @@ def _check_consistency(
 ) -> list[str]:
     """Check report is consistent with original image findings."""
     warnings = []
-
-    # if image analysis found nothing abnormal but report mentions findings
     normal_impression = "no acute" in image_findings.impression.lower()
     report_has_findings = any(
-        kw in report.findings.lower()
-        for kw in ["consolidation", "effusion", "pneumothorax", "mass", "opacity"]
+        kw in report.findings.lower() and not _is_negated(kw, report.findings.lower())
+        for kw in ["consolidation", "effusion", "pneumothorax", "malignancy", "opacity"]
     )
-
     if normal_impression and report_has_findings:
         warnings.append(
-            "Report mentions significant findings but image analysis impression was normal — verify"
+            "Report mentions significant findings but image impression was normal — verify"
         )
-
     return warnings
+
+
+def _clean_llm_list(raw: str) -> list[str]:
+    """
+    Clean LLM output that may contain template artifacts.
+    Removes things like '[comma separated list...]', 'none', empty strings.
+    """
+    if not raw:
+        return []
+
+    # remove anything inside square brackets (template instructions)
+    raw = re.sub(r'\[.*?\]', '', raw)
+
+    items = [i.strip() for i in raw.split(',')]
+    cleaned = []
+    for item in items:
+        item = item.strip().strip('"').strip("'")
+        # skip empty, 'none', or template artifacts
+        if item and item.lower() not in ('none', 'n/a', '') and len(item) > 3:
+            cleaned.append(item)
+    return cleaned
 
 
 def _mock_validation(
@@ -102,13 +140,12 @@ def _mock_validation(
 ) -> ValidationResult:
     logger.info("Mode: MOCK QA validation | anon_id=%s", report.anonymized_id)
 
-    issues = _check_completeness(report)
+    issues   = _check_completeness(report)
     warnings = _check_urgency(report, image_findings)
     warnings += _check_consistency(report, image_findings)
 
-    passed = len(issues) == 0
-    score = 1.0 - (len(issues) * 0.2) - (len(warnings) * 0.1)
-    score = max(0.0, min(1.0, score))
+    passed  = len(issues) == 0
+    score   = max(0.0, min(1.0, 1.0 - len(issues) * 0.2 - len(warnings) * 0.1))
     requires_human = not passed or len(warnings) > 1 or image_findings.flagged
 
     return ValidationResult(
@@ -126,11 +163,11 @@ def _llm_validation(
     report: RadiologyReport,
     image_findings: ImageFindings,
 ) -> ValidationResult:
-    """Use LLM for deeper semantic validation."""
+    """LLM-based semantic validation."""
     from openai import OpenAI
 
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-    model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
+    model    = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
 
     if os.environ.get("OPENROUTER_API_KEY", "your-openrouter-key") != "your-openrouter-key":
         client = OpenAI(
@@ -139,9 +176,9 @@ def _llm_validation(
         )
         model = os.environ.get("LLM_MODEL", "qwen/qwen2.5-vl-72b-instruct")
     else:
-        client = OpenAI(api_key="ollama", base_url=base_url)
+        client = OpenAI(api_key="ollama", base_url=base_url, timeout=300.0)
 
-    prompt = f"""You are a senior radiologist reviewing a junior radiologist's report.
+    prompt = f"""You are a senior radiologist reviewing a junior radiologist report.
 
 ORIGINAL IMAGE FINDINGS:
 {chr(10).join(f"- {f}" for f in image_findings.findings)}
@@ -152,12 +189,15 @@ ORIGINAL IMPRESSION:
 DRAFTED REPORT:
 {report.report_text}
 
-Review the report and respond in this exact format:
-PASSED: [true/false]
-SCORE: [0.0-1.0]
-ISSUES: [comma separated list of critical issues, or 'none']
-WARNINGS: [comma separated list of warnings, or 'none']
-REQUIRES_HUMAN_REVIEW: [true/false]"""
+Review the report carefully and respond ONLY with these exact lines, no other text:
+PASSED: true
+SCORE: 0.85
+ISSUES: none
+WARNINGS: none
+REQUIRES_HUMAN_REVIEW: false
+
+Replace the values with your actual assessment. For ISSUES and WARNINGS write specific
+clinical concerns as plain text, or write 'none' if there are none."""
 
     logger.info("Mode: LLM QA validation | model=%s", model)
 
@@ -168,18 +208,18 @@ REQUIRES_HUMAN_REVIEW: [true/false]"""
     )
 
     message = response.choices[0].message
-    raw = message.content or ""
+    raw     = message.content or ""
     if not raw.strip():
         reasoning = getattr(message, "reasoning", "") or ""
         if "PASSED:" in reasoning:
             idx = reasoning.rfind("PASSED:")
             raw = reasoning[idx:]
 
-    # parse LLM validation response
-    passed = True
-    score = 0.8
-    issues = []
-    warnings = []
+    # parse response
+    passed         = True
+    score          = 0.8
+    issues         = []
+    warnings       = []
     requires_human = False
 
     for line in raw.splitlines():
@@ -188,25 +228,23 @@ REQUIRES_HUMAN_REVIEW: [true/false]"""
             passed = "true" in line.lower()
         elif line.startswith("SCORE:"):
             try:
-                score = float(line.replace("SCORE:", "").strip())
-            except ValueError:
+                score = float(re.search(r'[\d.]+', line.replace("SCORE:", "")).group())
+            except Exception:
                 score = 0.8
         elif line.startswith("ISSUES:"):
-            val = line.replace("ISSUES:", "").strip()
-            if val.lower() != "none":
-                issues = [i.strip() for i in val.split(",")]
+            issues = _clean_llm_list(line.replace("ISSUES:", "").strip())
         elif line.startswith("WARNINGS:"):
-            val = line.replace("WARNINGS:", "").strip()
-            if val.lower() != "none":
-                warnings = [w.strip() for w in val.split(",")]
+            warnings = _clean_llm_list(line.replace("WARNINGS:", "").strip())
         elif line.startswith("REQUIRES_HUMAN_REVIEW:"):
             requires_human = "true" in line.lower()
 
-    # always run rule-based checks on top of LLM
-    rule_issues = _check_completeness(report)
+    # always run rule-based checks on top
+    rule_issues   = _check_completeness(report)
     rule_warnings = _check_urgency(report, image_findings)
-    issues = list(set(issues + rule_issues))
-    warnings = list(set(warnings + rule_warnings))
+    rule_warnings += _check_consistency(report, image_findings)
+
+    issues   = list(dict.fromkeys(issues + rule_issues))
+    warnings = list(dict.fromkeys(warnings + rule_warnings))
 
     return ValidationResult(
         anonymized_id=report.anonymized_id,
