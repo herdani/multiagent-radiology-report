@@ -25,8 +25,8 @@ The system highlights exactly which regions drove the model's findings. Red/yell
 
 | Chest X-Ray + Grad-CAM | Clinical finding |
 |---|---|
-| ![Heatmap 1](docs/heatmap_demo1.png) | Left upper lobe opacity — model correctly identifies abnormal region |
-| ![Heatmap 2](docs/heatmap_demo2.png) | Left mid-zone consolidation — model focuses on lung parenchyma, ignores hardware |
+| ![Heatmap 1](docs/heatmap1.png) | Left upper lobe opacity — model correctly identifies abnormal region |
+| ![Heatmap 2](docs/heatmap2.png) | Left mid-zone consolidation — model focuses on lung parenchyma, ignores hardware |
 
 ---
 
