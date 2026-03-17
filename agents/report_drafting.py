@@ -1,3 +1,4 @@
+import httpx
 """
 Report Drafting Agent
 ----------------------
@@ -151,17 +152,30 @@ def _llm_report(
 ) -> RadiologyReport:
     from openai import OpenAI
 
-    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-    model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
-
-    if os.environ.get("OPENROUTER_API_KEY", "your-openrouter-key") != "your-openrouter-key":
+    if os.environ.get("GROQ_API_KEY"):
+        import httpx
         client = OpenAI(
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            api_key=os.environ["GROQ_API_KEY"],
+            base_url="https://api.groq.com/openai/v1",
+            timeout=httpx.Timeout(60.0, connect=10.0),
         )
-        model = os.environ.get("LLM_MODEL", "qwen/qwen2.5-vl-72b-instruct")
+        model = os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+    elif os.environ.get("OLLAMA_MODEL"):
+            import httpx
+            client = OpenAI(
+                api_key="ollama",
+                base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+                timeout=httpx.Timeout(300.0, connect=60.0),
+            )
+            model = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
     else:
-        client = OpenAI(api_key="ollama", base_url=base_url, timeout=300.0)
+            import httpx
+            client = OpenAI(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            model = os.environ.get("LLM_MODEL", "qwen/qwen2.5-vl-72b-instruct")
 
     user_prompt = f"""Generate a radiology report based on:
 

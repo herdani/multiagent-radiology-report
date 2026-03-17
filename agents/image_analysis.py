@@ -1,3 +1,4 @@
+import httpx
 import base64
 import logging
 import os
@@ -123,7 +124,7 @@ def _ollama_analysis(png_path: str, anonymized_id: str, modality: str) -> ImageF
     model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
-    client = OpenAI(api_key="ollama", base_url=base_url, timeout=300.0)
+    client = OpenAI(api_key="ollama", base_url=base_url, timeout=httpx.Timeout(300.0, connect=60.0))
     image_b64 = _encode_image(png_path)
 
     logger.info("Mode: OLLAMA | model=%s | anon_id=%s", model, anonymized_id)
@@ -190,9 +191,56 @@ def _openrouter_analysis(png_path: str, anonymized_id: str, modality: str) -> Im
     raw = _extract_content(response)
     return _parse_response(raw, anonymized_id, modality)
 
+def _groq_analysis(png_path: str, anonymized_id: str, modality: str) -> ImageFindings:
+    """Cloud inference via Groq — fast, free, vision capable."""
+    from openai import OpenAI
+    import httpx
+
+    client = OpenAI(
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url="https://api.groq.com/openai/v1",
+        timeout=httpx.Timeout(60.0, connect=10.0),
+    )
+
+    model = os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+    image_b64 = _encode_image(png_path)
+    logger.info("Mode: GROQ | model=%s | anon_id=%s", model, anonymized_id)
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": f"Analyze this {modality} scan and provide your findings.",
+                    },
+                ],
+            },
+        ],
+        max_tokens=1024,
+    )
+
+    raw = response.choices[0].message.content or ""
+    return _parse_response(raw, anonymized_id, modality)
 
 def run(png_path: str, anonymized_id: str, modality: str = "CR") -> ImageFindings:
-    if os.environ.get("OLLAMA_MODEL"):
+    """
+    Mode selection priority:
+      1. GROQ_API_KEY set      → Groq cloud (fast, free, vision)
+      2. OLLAMA_MODEL set      → local Ollama
+      3. OPENROUTER_API_KEY set → OpenRouter cloud
+      4. none                  → mock mode
+    """
+    if os.environ.get("GROQ_API_KEY"):
+        return _groq_analysis(png_path, anonymized_id, modality)
+    elif os.environ.get("OLLAMA_MODEL"):
         return _ollama_analysis(png_path, anonymized_id, modality)
     elif os.environ.get("OPENROUTER_API_KEY", "your-openrouter-key") != "your-openrouter-key":
         return _openrouter_analysis(png_path, anonymized_id, modality)

@@ -2,14 +2,10 @@
 LangGraph Orchestrator with mandatory Human-in-the-Loop
 --------------------------------------------------------
 Every pipeline run pauses for radiologist review before finalizing.
-The radiologist can edit the report before approving.
 
 Flow:
   image_analysis → clinical_context → report_drafting → qa_validation
-       → human_review (ALWAYS) → finalize
-       
-  If QA fails and retries left → retry report_drafting first
-  then always goes to human_review regardless
+  → human_review (ALWAYS) → finalize
 """
 import logging
 import os
@@ -29,35 +25,39 @@ from agents.qa_validation import ValidationResult, run as validate
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
-DB_PATH = "data/checkpoints.db"
+DB_PATH     = "data/checkpoints.db"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STATE
-# ══════════════════════════════════════════════════════════════════════════════
+# ── State ─────────────────────────────────────────────────────────────────────
+
 class PipelineState(TypedDict):
     # inputs
-    png_path:         str
-    anonymized_id:    str
-    modality:         str
+    png_path:          str
+    anonymized_id:     str
+    modality:          str
+    clinical_note:     str              # free text from radiologist
     # agent outputs
-    image_findings:   ImageFindings | None
-    clinical_context: ClinicalContext | None
-    report:           RadiologyReport | None
-    validation:       ValidationResult | None
+    image_findings:    ImageFindings | None
+    clinical_context:  ClinicalContext | None
+    report:            RadiologyReport | None
+    validation:        ValidationResult | None
     # control
-    retry_count:      int
-    error:            str | None
-    status:           str
+    retry_count:       int
+    error:             str | None
+    status:            str
     # HIL
-    human_approved:   bool
+    human_approved:    bool
     final_report_text: str
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# NODES
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Nodes ─────────────────────────────────────────────────────────────────────
+
 def node_image_analysis(state: PipelineState) -> PipelineState:
+    """Run vision model on scan. Skip if findings already provided."""
+    if state.get("image_findings") is not None:
+        logger.info("[node] image_analysis — skipping (findings pre-computed)")
+        return {**state, "status": "image_analyzed"}
+
     logger.info("[node] image_analysis | anon_id=%s", state["anonymized_id"])
     try:
         findings = analyze(
@@ -72,9 +72,13 @@ def node_image_analysis(state: PipelineState) -> PipelineState:
 
 
 def node_clinical_context(state: PipelineState) -> PipelineState:
+    """Fetch medical knowledge via Qdrant RAG + prior reports via MCP."""
     logger.info("[node] clinical_context | anon_id=%s", state["anonymized_id"])
     try:
-        context = get_context(state["image_findings"])
+        context = get_context(
+            state["image_findings"],
+            clinical_note=state.get("clinical_note", ""),
+        )
         return {**state, "clinical_context": context, "status": "context_retrieved"}
     except Exception as e:
         logger.error("[node] clinical_context failed: %s", e)
@@ -82,6 +86,7 @@ def node_clinical_context(state: PipelineState) -> PipelineState:
 
 
 def node_report_drafting(state: PipelineState) -> PipelineState:
+    """Generate full structured radiology report."""
     logger.info(
         "[node] report_drafting | anon_id=%s | attempt=%d",
         state["anonymized_id"],
@@ -96,14 +101,15 @@ def node_report_drafting(state: PipelineState) -> PipelineState:
 
 
 def node_qa_validation(state: PipelineState) -> PipelineState:
+    """Validate report for completeness, consistency, urgency."""
     logger.info("[node] qa_validation | anon_id=%s", state["anonymized_id"])
     try:
         result = validate(state["report"], state["image_findings"])
         return {
             **state,
-            "validation": result,
+            "validation":  result,
             "retry_count": state["retry_count"] + (0 if result.passed else 1),
-            "status": "validated" if result.passed else "qa_failed",
+            "status":      "validated" if result.passed else "qa_failed",
         }
     except Exception as e:
         logger.error("[node] qa_validation failed: %s", e)
@@ -112,50 +118,34 @@ def node_qa_validation(state: PipelineState) -> PipelineState:
 
 def node_human_review(state: PipelineState) -> PipelineState:
     """
-    MANDATORY HIL NODE — always pauses here for radiologist review.
-
-    Every report goes through this node regardless of QA score.
-    The radiologist sees:
-      - The AI generated report (editable)
-      - QA score and any issues
-      - Whether findings were flagged urgent
-
-    They can:
-      - Approve as-is
-      - Edit and approve
-      - Reject (sends back for re-analysis)
-
-    This satisfies:
-      - EU AI Act Art. 14: human oversight for high-risk AI
-      - Clinical governance: no AI report goes out unreviewed
-      - HIPAA: human accountability for medical decisions
+    MANDATORY HIL — always pauses here for radiologist review.
+    Every report goes through this regardless of QA score.
+    Satisfies EU AI Act Art. 14 human oversight requirement.
     """
     logger.info(
-        "[node] human_review — PAUSING for radiologist | anon_id=%s",
+        "[node] human_review — PAUSING | anon_id=%s",
         state["anonymized_id"],
     )
 
     validation = state.get("validation")
     report     = state.get("report")
+    context    = state.get("clinical_context")
 
-    # build context for the radiologist
-    review_context = {
-        "message":        "Please review and approve this AI-generated radiology report.",
-        "report":         report.report_text if report else "",
-        "qa_score":       validation.score if validation else 0,
-        "qa_passed":      validation.passed if validation else False,
-        "qa_issues":      validation.issues if validation else [],
-        "qa_warnings":    validation.warnings if validation else [],
-        "urgency":        report.urgency_level if report else "unknown",
-        "modality":       state["modality"],
-        "anonymized_id":  state["anonymized_id"],
-        "retry_count":    state["retry_count"],
-    }
+    human_input = interrupt({
+        "message":             "Please review and approve this AI-generated radiology report.",
+        "report":              report.report_text if report else "",
+        "qa_score":            validation.score if validation else 0,
+        "qa_passed":           validation.passed if validation else False,
+        "qa_issues":           validation.issues if validation else [],
+        "qa_warnings":         validation.warnings if validation else [],
+        "urgency":             report.urgency_level if report else "unknown",
+        "modality":            state["modality"],
+        "anonymized_id":       state["anonymized_id"],
+        "clinical_note":       state.get("clinical_note", ""),
+        "prior_reports_found": bool(context and context.prior_reports_summary),
+        "retry_count":         state["retry_count"],
+    })
 
-    # PAUSE — execution resumes when radiologist calls resume_pipeline()
-    human_input = interrupt(review_context)
-
-    # resumed — human_input contains radiologist's response
     approved_text = human_input.get("approved_report", report.report_text if report else "")
     approved      = human_input.get("approved", False)
 
@@ -168,12 +158,12 @@ def node_human_review(state: PipelineState) -> PipelineState:
         **state,
         "human_approved":    approved,
         "final_report_text": approved_text,
-        "status": "human_approved" if approved else "human_rejected",
+        "status":            "human_approved" if approved else "human_rejected",
     }
 
 
 def node_finalize(state: PipelineState) -> PipelineState:
-    """Save final approved report — in phase 6 this writes to PostgreSQL + S3."""
+    """Finalize approved report — save to PostgreSQL in production."""
     final_text = state.get("final_report_text") or (
         state["report"].report_text if state.get("report") else ""
     )
@@ -185,61 +175,49 @@ def node_finalize(state: PipelineState) -> PipelineState:
     return {
         **state,
         "final_report_text": final_text,
-        "status": "complete",
+        "status":            "complete",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ROUTING
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Routing ───────────────────────────────────────────────────────────────────
+
 def route_after_analysis(state: PipelineState) -> str:
     return "end" if state["status"] == "failed" else "continue"
 
 
 def route_after_qa(state: PipelineState) -> str:
     """
-    After QA validation:
-      - pipeline failed    → end
-      - QA passed          → always go to human_review
-      - QA failed, retries left → retry report drafting
-      - QA failed, max retries  → go to human_review anyway
-        (radiologist sees the best attempt with QA issues noted)
+    After QA:
+      failed pipeline    → end
+      QA passed          → mandatory human review
+      QA failed + retries → retry drafting
+      QA failed + max    → human review anyway
     """
     if state["status"] == "failed":
         return "end"
 
     validation = state.get("validation")
 
-    # QA passed — mandatory human review regardless
     if validation and validation.passed:
         return "human_review"
 
-    # QA failed but retries left — try again
     if state["retry_count"] < MAX_RETRIES:
         logger.info(
-            "QA failed — retrying report drafting (attempt %d/%d)",
+            "QA failed — retrying (%d/%d)",
             state["retry_count"], MAX_RETRIES,
         )
         return "retry"
 
-    # QA failed and max retries hit — send to human review anyway
-    # radiologist will see the QA issues and can fix manually
-    logger.warning(
-        "Max retries reached — sending to human review with QA issues noted"
-    )
+    logger.warning("Max retries — sending to human review with QA issues")
     return "human_review"
 
 
 def route_after_human(state: PipelineState) -> str:
-    """After human review: approved → finalize, rejected → end."""
-    if state.get("human_approved"):
-        return "finalize"
-    return "end"
+    return "finalize" if state.get("human_approved") else "end"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GRAPH BUILDER
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Graph builder ─────────────────────────────────────────────────────────────
+
 def build_graph(checkpointer=None):
     graph = StateGraph(PipelineState)
 
@@ -259,18 +237,11 @@ def build_graph(checkpointer=None):
     )
     graph.add_edge("clinical_context", "report_drafting")
     graph.add_edge("report_drafting",  "qa_validation")
-
-    # after QA — always goes to human_review (directly or after retries)
     graph.add_conditional_edges(
         "qa_validation",
         route_after_qa,
-        {
-            "human_review": "human_review",
-            "retry":        "report_drafting",
-            "end":          END,
-        },
+        {"human_review": "human_review", "retry": "report_drafting", "end": END},
     )
-
     graph.add_conditional_edges(
         "human_review",
         route_after_human,
@@ -284,19 +255,22 @@ def build_graph(checkpointer=None):
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PUBLIC ENTRY POINTS
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Public entry points ───────────────────────────────────────────────────────
+
 def run_pipeline(
-    png_path: str,
-    anonymized_id: str,
-    modality: str = "CR",
-    hil: bool = True,          # default True now — HIL is always on
-    thread_id: str | None = None,
+    png_path:          str,
+    anonymized_id:     str,
+    modality:          str = "CR",
+    hil:               bool = True,
+    thread_id:         str | None = None,
+    existing_findings = None,
+    clinical_note:     str = "",
 ) -> tuple[PipelineState, str | None]:
     """
-    Run the full pipeline.
-    HIL is on by default — every report requires radiologist review.
+    Run the full multi-agent pipeline.
+    - existing_findings: skip image analysis if already computed
+    - clinical_note: radiologist context improves report quality
+    - hil: always True in production
     """
     load_dotenv("/home/moez/projects/radiology-ai/.env")
     os.makedirs("data", exist_ok=True)
@@ -304,10 +278,10 @@ def run_pipeline(
     thread_id = thread_id or anonymized_id
 
     if hil:
-        conn        = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn         = sqlite3.connect(DB_PATH, check_same_thread=False)
         checkpointer = SqliteSaver(conn)
-        graph       = build_graph(checkpointer=checkpointer)
-        config      = {"configurable": {"thread_id": thread_id}}
+        graph        = build_graph(checkpointer=checkpointer)
+        config       = {"configurable": {"thread_id": thread_id}}
     else:
         graph  = build_graph()
         config = {}
@@ -316,31 +290,33 @@ def run_pipeline(
         "png_path":          png_path,
         "anonymized_id":     anonymized_id,
         "modality":          modality,
-        "image_findings":    None,
+        "clinical_note":     clinical_note,
+        "image_findings":    existing_findings,
         "clinical_context":  None,
         "report":            None,
         "validation":        None,
         "retry_count":       0,
         "error":             None,
-        "status":            "started",
+        "status":            "image_analyzed" if existing_findings else "started",
         "human_approved":    False,
         "final_report_text": "",
     }
 
     logger.info(
-        "Starting pipeline | anon_id=%s | modality=%s | hil=%s",
+        "Starting pipeline | anon_id=%s | modality=%s | hil=%s | has_note=%s | skip_analysis=%s",
         anonymized_id, modality, hil,
+        bool(clinical_note), existing_findings is not None,
     )
-    final_state = graph.invoke(initial_state, config)
-    logger.info("Pipeline paused/complete | status=%s", final_state.get("status"))
 
+    final_state = graph.invoke(initial_state, config)
+    logger.info("Pipeline status: %s", final_state.get("status"))
     return final_state, thread_id
 
 
 def resume_pipeline(
-    thread_id: str,
+    thread_id:       str,
     approved_report: str,
-    approved: bool = True,
+    approved:        bool = True,
 ) -> PipelineState:
     """Resume after radiologist review."""
     load_dotenv("/home/moez/projects/radiology-ai/.env")
@@ -350,10 +326,7 @@ def resume_pipeline(
     graph        = build_graph(checkpointer=checkpointer)
     config       = {"configurable": {"thread_id": thread_id}}
 
-    logger.info(
-        "Resuming pipeline | thread_id=%s | approved=%s",
-        thread_id, approved,
-    )
+    logger.info("Resuming pipeline | thread_id=%s | approved=%s", thread_id, approved)
 
     final_state = graph.invoke(
         Command(resume={
@@ -367,29 +340,32 @@ def resume_pipeline(
     return final_state
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# W&B TRACKING WRAPPER
-# ══════════════════════════════════════════════════════════════════════════════
+# ── W&B tracking wrapper ──────────────────────────────────────────────────────
+
 def run_pipeline_tracked(
-    png_path: str,
-    anonymized_id: str,
-    modality: str = "CR",
-    hil: bool = True,
-    thread_id: str = None,
+    png_path:          str,
+    anonymized_id:     str,
+    modality:          str = "CR",
+    hil:               bool = True,
+    thread_id:         str = None,
+    clinical_note:     str = "",
 ) -> tuple:
     """Run pipeline with automatic W&B tracking."""
     import time
     from mlops.tracking import log_pipeline_run, PipelineRunMetrics
 
     start_time = time.time()
-    state, tid = run_pipeline(png_path, anonymized_id, modality, hil, thread_id)
-    latency    = time.time() - start_time
+    state, tid = run_pipeline(
+        png_path, anonymized_id, modality,
+        hil, thread_id, clinical_note=clinical_note,
+    )
+    latency = time.time() - start_time
 
     validation = state.get("validation")
     report     = state.get("report")
     findings   = state.get("image_findings")
-    model_name = os.environ.get("OLLAMA_MODEL") or os.environ.get(
-        "LLM_VISION_MODEL", "unknown"
+    model_name = os.environ.get("GROQ_MODEL") or os.environ.get(
+        "OLLAMA_MODEL", "unknown"
     )
 
     metrics = PipelineRunMetrics(
@@ -402,7 +378,7 @@ def run_pipeline_tracked(
         retry_count=state.get("retry_count", 0),
         latency_seconds=round(latency, 2),
         human_approved=state.get("human_approved", False),
-        requires_review=True,   # always True now
+        requires_review=True,
         findings_count=len(findings.findings) if findings else 0,
         impression=report.impression if report else "",
         error=state.get("error"),
