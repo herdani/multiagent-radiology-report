@@ -29,7 +29,9 @@ class RadiologyReport:
     draft_version: int = 1
 
 
-REPORT_PROMPT = """You are an expert radiologist. Generate a formal radiology report using this exact structure:
+REPORT_PROMPT = """You are an expert radiologist. Generate a formal radiology report.
+
+Use EXACTLY this structure with no markdown formatting, no bold, no headers with #, no horizontal rules:
 
 CLINICAL INDICATION:
 [brief reason for exam]
@@ -46,38 +48,54 @@ IMPRESSION:
 RECOMMENDATIONS:
 [follow-up recommendations]
 
-Use professional radiological language. Be concise and precise.
-Do not invent findings not supported by the image analysis."""
+Rules:
+- No markdown formatting of any kind
+- No ** bold ** or * italic *
+- No --- horizontal rules  
+- No # headers
+- Plain text only
+- Do not invent patient details like name, MRN, date
+- Do not use placeholder brackets like [X] or [Date]
+- Use professional radiological language"""
 
 
 def _parse_report_sections(raw: str) -> dict:
     """
     Parse raw LLM report text into sections.
-    Handles multiline sections correctly.
+    Handles both plain text and markdown formatted responses (Claude uses markdown).
     """
+    import re
+
     sections = {
         "clinical_indication": "",
-        "technique": "",
-        "findings": "",
-        "impression": "",
-        "recommendations": "",
+        "technique":           "",
+        "findings":            "",
+        "impression":          "",
+        "recommendations":     "",
     }
 
-    # map header keywords to section keys
     headers = {
         "CLINICAL INDICATION": "clinical_indication",
-        "TECHNIQUE": "technique",
-        "FINDINGS": "findings",
-        "IMPRESSION": "impression",
-        "RECOMMENDATIONS": "recommendations",
+        "TECHNIQUE":           "technique",
+        "FINDINGS":            "findings",
+        "IMPRESSION":          "impression",
+        "RECOMMENDATIONS":     "recommendations",
     }
 
+    # strip markdown formatting
+    # remove bold (**text**), italic (*text*), horizontal rules (---), heading hashes (#)
+    raw = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)   # bold → plain
+    raw = re.sub(r'\*(.+?)\*',   r'\1', raw)      # italic → plain
+    raw = re.sub(r'^#{1,3}\s*',  '',    raw, flags=re.MULTILINE)  # ## headers
+    raw = re.sub(r'^---+$',      '',    raw, flags=re.MULTILINE)  # horizontal rules
+    raw = re.sub(r'^-{3,}$',     '',    raw, flags=re.MULTILINE)
+
     current_key = None
-    buffer = []
+    buffer      = []
 
     for line in raw.splitlines():
         stripped = line.strip()
-        upper = stripped.upper().rstrip(":")
+        upper    = stripped.upper().rstrip(":").strip()
 
         # check if this line is a section header
         matched_header = None
@@ -92,7 +110,7 @@ def _parse_report_sections(raw: str) -> dict:
                 sections[current_key] = "\n".join(buffer).strip()
                 buffer = []
             current_key = matched_header
-            # handle inline content after the header (e.g. "TECHNIQUE: MRI...")
+            # handle inline content after header
             inline = stripped.split(":", 1)
             if len(inline) > 1 and inline[1].strip():
                 buffer.append(inline[1].strip())
@@ -152,30 +170,31 @@ def _llm_report(
 ) -> RadiologyReport:
     from openai import OpenAI
 
-    if os.environ.get("GROQ_API_KEY"):
-        import httpx
+    # priority: OpenRouter Claude → Groq → Ollama
+    if os.environ.get("OPENROUTER_API_KEY"):
+        client = OpenAI(
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+            timeout=httpx.Timeout(60.0, connect=10.0),
+        )
+        model = os.environ.get("REPORT_MODEL", "anthropic/claude-sonnet-4-6")
+        logger.info("Mode: Claude Sonnet via OpenRouter | model=%s", model)
+    elif os.environ.get("GROQ_API_KEY"):
         client = OpenAI(
             api_key=os.environ["GROQ_API_KEY"],
             base_url="https://api.groq.com/openai/v1",
             timeout=httpx.Timeout(60.0, connect=10.0),
         )
         model = os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
-    elif os.environ.get("OLLAMA_MODEL"):
-            import httpx
-            client = OpenAI(
-                api_key="ollama",
-                base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-                timeout=httpx.Timeout(300.0, connect=60.0),
-            )
-            model = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+        logger.info("Mode: Groq | model=%s", model)
     else:
-            import httpx
-            client = OpenAI(
-                api_key=os.environ["OPENROUTER_API_KEY"],
-                base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-                timeout=httpx.Timeout(60.0, connect=10.0),
-            )
-            model = os.environ.get("LLM_MODEL", "qwen/qwen2.5-vl-72b-instruct")
+        client = OpenAI(
+            api_key="ollama",
+            base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+            timeout=httpx.Timeout(300.0, connect=60.0),
+        )
+        model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
+        logger.info("Mode: Ollama | model=%s", model)
 
     user_prompt = f"""Generate a radiology report based on:
 
