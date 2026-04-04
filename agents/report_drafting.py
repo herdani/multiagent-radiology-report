@@ -1,16 +1,17 @@
 import httpx
+
 """
 Report Drafting Agent
 ----------------------
 Takes image findings + clinical context and generates
 a structured radiology report in standard format.
 """
-import logging
-import os
-from dataclasses import dataclass
+import logging  # noqa: E402
+import os  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 
-from agents.image_analysis import ImageFindings
-from agents.clinical_context import ClinicalContext
+from agents.image_analysis import ImageFindings  # noqa: E402
+from agents.clinical_context import ClinicalContext  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -68,34 +69,34 @@ def _parse_report_sections(raw: str) -> dict:
 
     sections = {
         "clinical_indication": "",
-        "technique":           "",
-        "findings":            "",
-        "impression":          "",
-        "recommendations":     "",
+        "technique": "",
+        "findings": "",
+        "impression": "",
+        "recommendations": "",
     }
 
     headers = {
         "CLINICAL INDICATION": "clinical_indication",
-        "TECHNIQUE":           "technique",
-        "FINDINGS":            "findings",
-        "IMPRESSION":          "impression",
-        "RECOMMENDATIONS":     "recommendations",
+        "TECHNIQUE": "technique",
+        "FINDINGS": "findings",
+        "IMPRESSION": "impression",
+        "RECOMMENDATIONS": "recommendations",
     }
 
     # strip markdown formatting
     # remove bold (**text**), italic (*text*), horizontal rules (---), heading hashes (#)
-    raw = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)   # bold → plain
-    raw = re.sub(r'\*(.+?)\*',   r'\1', raw)      # italic → plain
-    raw = re.sub(r'^#{1,3}\s*',  '',    raw, flags=re.MULTILINE)  # ## headers
-    raw = re.sub(r'^---+$',      '',    raw, flags=re.MULTILINE)  # horizontal rules
-    raw = re.sub(r'^-{3,}$',     '',    raw, flags=re.MULTILINE)
+    raw = re.sub(r"\*\*(.+?)\*\*", r"\1", raw)  # bold → plain
+    raw = re.sub(r"\*(.+?)\*", r"\1", raw)  # italic → plain
+    raw = re.sub(r"^#{1,3}\s*", "", raw, flags=re.MULTILINE)  # ## headers
+    raw = re.sub(r"^---+$", "", raw, flags=re.MULTILINE)  # horizontal rules
+    raw = re.sub(r"^-{3,}$", "", raw, flags=re.MULTILINE)
 
     current_key = None
-    buffer      = []
+    buffer = []
 
     for line in raw.splitlines():
         stripped = line.strip()
-        upper    = stripped.upper().rstrip(":").strip()
+        upper = stripped.upper().rstrip(":").strip()
 
         # check if this line is a section header
         matched_header = None

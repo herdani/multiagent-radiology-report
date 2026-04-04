@@ -1,41 +1,51 @@
-# Stage 1: builder
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
+    curl \
+    supervisor \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
-RUN pip install --upgrade pip \
-    && pip install --prefix=/install .
+RUN pip install --upgrade pip setuptools wheel
 
+# ── CPU torch first — must be before requirements.txt ────────────────────
+RUN pip install --no-cache-dir \
+        "torch==2.2.2+cpu" \
+        "torchvision==0.17.2+cpu" \
+        --index-url https://download.pytorch.org/whl/cpu
 
-# Stage 2: runtime
-FROM python:3.11-slim AS runtime
+# ── Everything else from pinned requirements ──────────────────────────────
+COPY requirements_cpu.txt .
+RUN pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements_cpu.txt
 
-WORKDIR /app
+# ── Source code ───────────────────────────────────────────────────────────
+COPY agents/ agents/
+COPY api/ api/
+COPY pipeline/ pipeline/
+COPY ui/ ui/
+COPY mlops/ mlops/
+COPY mcp_server/ mcp_server/
+COPY infra/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
+RUN mkdir -p data/processed data/xai data
 RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser data
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+ENV MPLCONFIGDIR=/tmp/matplotlib \
+    HF_HOME=/tmp/huggingface \
+    XDG_CACHE_HOME=/tmp/cache
 
-COPY --from=builder /install /usr/local
-COPY --chown=appuser:appuser . .
+EXPOSE 8000 7860
 
-USER appuser
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"
-
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

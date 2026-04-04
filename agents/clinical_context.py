@@ -7,10 +7,11 @@ Retrieves relevant medical context from two sources:
 
 Clinical note from radiologist improves RAG retrieval quality.
 """
+
 import asyncio
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from agents.image_analysis import ImageFindings
 
@@ -19,21 +20,41 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ClinicalContext:
-    anonymized_id:          str
-    relevant_conditions:    list[str]
+    anonymized_id: str
+    relevant_conditions: list[str]
     differential_diagnosis: list[str]
-    recommended_followup:   list[str]
-    urgency_level:          str
-    context_sources:        list[str]
-    prior_reports_summary:  str = ""
-    clinical_note:          str = ""
+    recommended_followup: list[str]
+    urgency_level: str
+    context_sources: list[str]
+    prior_reports_summary: str = ""
+    clinical_note: str = ""
 
 
 FALLBACK_KNOWLEDGE = {
-    "consolidation":    {"conditions": ["Pneumonia", "Pulmonary edema"],  "differential": ["Bacterial pneumonia", "Viral pneumonia"], "followup": ["Repeat CXR in 6-8 weeks"], "urgency": "urgent"},
-    "pleural effusion": {"conditions": ["Heart failure", "Malignancy"],   "differential": ["Transudative", "Exudative"],              "followup": ["Echocardiogram"],           "urgency": "urgent"},
-    "pneumothorax":     {"conditions": ["Spontaneous pneumothorax"],      "differential": ["Primary", "Secondary"],                   "followup": ["Immediate assessment"],     "urgency": "emergent"},
-    "normal":           {"conditions": ["No acute disease"],              "differential": ["Normal variant"],                         "followup": ["Routine follow-up"],        "urgency": "routine"},
+    "consolidation": {
+        "conditions": ["Pneumonia", "Pulmonary edema"],
+        "differential": ["Bacterial pneumonia", "Viral pneumonia"],
+        "followup": ["Repeat CXR in 6-8 weeks"],
+        "urgency": "urgent",
+    },
+    "pleural effusion": {
+        "conditions": ["Heart failure", "Malignancy"],
+        "differential": ["Transudative", "Exudative"],
+        "followup": ["Echocardiogram"],
+        "urgency": "urgent",
+    },
+    "pneumothorax": {
+        "conditions": ["Spontaneous pneumothorax"],
+        "differential": ["Primary", "Secondary"],
+        "followup": ["Immediate assessment"],
+        "urgency": "emergent",
+    },
+    "normal": {
+        "conditions": ["No acute disease"],
+        "differential": ["Normal variant"],
+        "followup": ["Routine follow-up"],
+        "urgency": "routine",
+    },
 }
 
 
@@ -53,6 +74,7 @@ def _build_query(image_findings: ImageFindings, clinical_note: str = "") -> str:
 
 # ── MCP client ────────────────────────────────────────────────────────────────
 
+
 async def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
     """Call a tool on the radiology MCP server via stdio."""
     try:
@@ -61,13 +83,8 @@ async def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
 
         server_params = StdioServerParameters(
             command="python",
-            args=["/home/moez/projects/radiology-ai/mcp_server/radiology_mcp.py"],
-            env={
-                "DATABASE_URL": os.environ.get(
-                    "DATABASE_URL",
-                    "sqlite:///./data/radiology.db"
-                )
-            },
+            args=["/app/mcp_server/radiology_mcp.py"],
+            env={"DATABASE_URL": os.environ.get("DATABASE_URL", "sqlite:///./data/radiology.db")},
         )
 
         async with stdio_client(server_params) as (read, write):
@@ -105,8 +122,6 @@ def _get_prior_reports_via_mcp(anonymized_id: str) -> str:
             return result
         return ""
     except RuntimeError:
-        # asyncio.run() fails if there's already an event loop running
-        # this happens when called from async context — use direct DB instead
         logger.warning("asyncio.run() conflict — falling back to direct DB query")
         return _get_prior_reports_direct(anonymized_id)
     except Exception as e:
@@ -125,15 +140,22 @@ def _get_prior_reports_direct(anonymized_id: str) -> str:
 
         DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radiology.db")
         connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-        engine  = create_engine(DATABASE_URL, connect_args=connect_args)
+        engine = create_engine(DATABASE_URL, connect_args=connect_args)
         Session = sessionmaker(bind=engine)
-        db      = Session()
+        db = Session()
 
         from api.models.report import Report
-        reports = db.query(Report).filter(
-            Report.anonymized_id == anonymized_id,
-            Report.human_approved == True,
-        ).order_by(Report.created_at.desc()).limit(3).all()
+
+        reports = (
+            db.query(Report)
+            .filter(
+                Report.anonymized_id == anonymized_id,
+                Report.human_approved,
+            )
+            .order_by(Report.created_at.desc())
+            .limit(3)
+            .all()
+        )
         db.close()
 
         if not reports:
@@ -158,6 +180,7 @@ def _get_prior_reports_direct(anonymized_id: str) -> str:
 
 # ── Qdrant RAG ────────────────────────────────────────────────────────────────
 
+
 def _qdrant_context(
     image_findings: ImageFindings,
     clinical_note: str = "",
@@ -165,10 +188,15 @@ def _qdrant_context(
     """Real RAG via Qdrant + prior reports via MCP."""
     from qdrant_client import QdrantClient
 
-    qdrant_url      = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key = os.environ.get("QDRANT_API_KEY") 
+
+    client = QdrantClient(
+        url=qdrant_url,
+        api_key=qdrant_api_key,  
+    )
     collection_name = "medical_literature"
 
-    client   = QdrantClient(url=qdrant_url)
     existing = [c.name for c in client.get_collections().collections]
 
     if collection_name not in existing:
@@ -179,7 +207,8 @@ def _qdrant_context(
     query = _build_query(image_findings, clinical_note)
     logger.info(
         "Mode: QDRANT RAG | anon_id=%s | query='%s...'",
-        image_findings.anonymized_id, query[:60],
+        image_findings.anonymized_id,
+        query[:60],
     )
 
     results = client.query(
@@ -191,20 +220,20 @@ def _qdrant_context(
     if not results:
         raise RuntimeError("No Qdrant results returned")
 
-    all_conditions   = []
+    all_conditions = []
     all_differential = []
-    all_followup     = []
-    sources          = []
-    urgency          = "routine"
-    urgency_rank     = {"routine": 0, "urgent": 1, "emergent": 2}
+    all_followup = []
+    sources = []
+    urgency = "routine"
+    urgency_rank = {"routine": 0, "urgent": 1, "emergent": 2}
 
     for hit in results:
-        payload     = hit.metadata if hasattr(hit, "metadata") else {}
-        conditions  = payload.get("conditions", [])
-        followup    = payload.get("followup", [])
-        finding     = payload.get("finding", "unknown")
+        payload = hit.metadata if hasattr(hit, "metadata") else {}
+        conditions = payload.get("conditions", [])
+        followup = payload.get("followup", [])
+        finding = payload.get("finding", "unknown")
         hit_urgency = payload.get("urgency", "routine")
-        source_id   = payload.get("id", "unknown")
+        source_id = payload.get("id", "unknown")
 
         all_conditions.extend(conditions)
         all_followup.extend(followup)
@@ -240,7 +269,7 @@ def _mock_context(
     logger.info("Mode: MOCK clinical context | anon_id=%s", image_findings.anonymized_id)
 
     combined = " ".join(image_findings.findings + [image_findings.impression]).lower()
-    match    = FALLBACK_KNOWLEDGE["normal"]
+    match = FALLBACK_KNOWLEDGE["normal"]
 
     for keyword, data in FALLBACK_KNOWLEDGE.items():
         if keyword in combined:
@@ -259,6 +288,7 @@ def _mock_context(
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
+
 
 def run(
     image_findings: ImageFindings,

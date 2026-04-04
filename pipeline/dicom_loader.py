@@ -29,12 +29,13 @@ TAGS_TO_ANONYMIZE = [
 @dataclass
 class DicomScan:
     """Represents a loaded and anonymized DICOM scan."""
-    pixel_array: np.ndarray       # raw pixel data
-    anonymized_id: str            # hashed patient ID — safe to log/store
-    modality: str                 # CT, MR, CR, DX...
+
+    pixel_array: np.ndarray  # raw pixel data
+    anonymized_id: str  # hashed patient ID — safe to log/store
+    modality: str  # CT, MR, CR, DX...
     rows: int
     columns: int
-    metadata: dict                # non-PII metadata only
+    metadata: dict  # non-PII metadata only
 
 
 def load_and_anonymize(path: str | Path) -> DicomScan:
@@ -59,14 +60,14 @@ def load_and_anonymize(path: str | Path) -> DicomScan:
 
     # --- Extract safe metadata ---
     metadata = {
-        "modality":          getattr(ds, "Modality", "UNKNOWN"),
+        "modality": getattr(ds, "Modality", "UNKNOWN"),
         "study_description": getattr(ds, "StudyDescription", ""),
-        "series_description":getattr(ds, "SeriesDescription", ""),
-        "body_part":         getattr(ds, "BodyPartExamined", ""),
-        "manufacturer":      getattr(ds, "Manufacturer", ""),
-        "rows":              int(getattr(ds, "Rows", 0)),
-        "columns":           int(getattr(ds, "Columns", 0)),
-        "bits_allocated":    int(getattr(ds, "BitsAllocated", 16)),
+        "series_description": getattr(ds, "SeriesDescription", ""),
+        "body_part": getattr(ds, "BodyPartExamined", ""),
+        "manufacturer": getattr(ds, "Manufacturer", ""),
+        "rows": int(getattr(ds, "Rows", 0)),
+        "columns": int(getattr(ds, "Columns", 0)),
+        "bits_allocated": int(getattr(ds, "BitsAllocated", 16)),
     }
 
     pixel_array = ds.pixel_array

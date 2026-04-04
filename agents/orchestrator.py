@@ -7,6 +7,7 @@ Flow:
   image_analysis → clinical_context → report_drafting → qa_validation
   → human_review (ALWAYS) → finalize
 """
+
 import logging
 import os
 import sqlite3
@@ -14,7 +15,11 @@ from typing import TypedDict
 from dotenv import load_dotenv
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    from langgraph.checkpoint.sqlite.sync import SqliteSaver
 from langgraph.types import interrupt, Command
 
 from agents.image_analysis import ImageFindings, run as analyze
@@ -25,32 +30,34 @@ from agents.qa_validation import ValidationResult, run as validate
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
-DB_PATH     = "data/checkpoints.db"
+DB_PATH = "data/checkpoints.db"
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
+
 class PipelineState(TypedDict):
     # inputs
-    png_path:          str
-    anonymized_id:     str
-    modality:          str
-    clinical_note:     str              # free text from radiologist
+    png_path: str
+    anonymized_id: str
+    modality: str
+    clinical_note: str  # free text from radiologist
     # agent outputs
-    image_findings:    ImageFindings | None
-    clinical_context:  ClinicalContext | None
-    report:            RadiologyReport | None
-    validation:        ValidationResult | None
+    image_findings: ImageFindings | None
+    clinical_context: ClinicalContext | None
+    report: RadiologyReport | None
+    validation: ValidationResult | None
     # control
-    retry_count:       int
-    error:             str | None
-    status:            str
+    retry_count: int
+    error: str | None
+    status: str
     # HIL
-    human_approved:    bool
+    human_approved: bool
     final_report_text: str
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
+
 
 def node_image_analysis(state: PipelineState) -> PipelineState:
     """Run vision model on scan. Skip if findings already provided."""
@@ -107,9 +114,9 @@ def node_qa_validation(state: PipelineState) -> PipelineState:
         result = validate(state["report"], state["image_findings"])
         return {
             **state,
-            "validation":  result,
+            "validation": result,
             "retry_count": state["retry_count"] + (0 if result.passed else 1),
-            "status":      "validated" if result.passed else "qa_failed",
+            "status": "validated" if result.passed else "qa_failed",
         }
     except Exception as e:
         logger.error("[node] qa_validation failed: %s", e)
@@ -128,37 +135,40 @@ def node_human_review(state: PipelineState) -> PipelineState:
     )
 
     validation = state.get("validation")
-    report     = state.get("report")
-    context    = state.get("clinical_context")
+    report = state.get("report")
+    context = state.get("clinical_context")
 
-    human_input = interrupt({
-        "message":             "Please review and approve this AI-generated radiology report.",
-        "report":              report.report_text if report else "",
-        "qa_score":            validation.score if validation else 0,
-        "qa_passed":           validation.passed if validation else False,
-        "qa_issues":           validation.issues if validation else [],
-        "qa_warnings":         validation.warnings if validation else [],
-        "urgency":             report.urgency_level if report else "unknown",
-        "modality":            state["modality"],
-        "anonymized_id":       state["anonymized_id"],
-        "clinical_note":       state.get("clinical_note", ""),
-        "prior_reports_found": bool(context and context.prior_reports_summary),
-        "retry_count":         state["retry_count"],
-    })
+    human_input = interrupt(
+        {
+            "message": "Please review and approve this AI-generated radiology report.",
+            "report": report.report_text if report else "",
+            "qa_score": validation.score if validation else 0,
+            "qa_passed": validation.passed if validation else False,
+            "qa_issues": validation.issues if validation else [],
+            "qa_warnings": validation.warnings if validation else [],
+            "urgency": report.urgency_level if report else "unknown",
+            "modality": state["modality"],
+            "anonymized_id": state["anonymized_id"],
+            "clinical_note": state.get("clinical_note", ""),
+            "prior_reports_found": bool(context and context.prior_reports_summary),
+            "retry_count": state["retry_count"],
+        }
+    )
 
     approved_text = human_input.get("approved_report", report.report_text if report else "")
-    approved      = human_input.get("approved", False)
+    approved = human_input.get("approved", False)
 
     logger.info(
         "[node] human_review RESUMED | approved=%s | anon_id=%s",
-        approved, state["anonymized_id"],
+        approved,
+        state["anonymized_id"],
     )
 
     return {
         **state,
-        "human_approved":    approved,
+        "human_approved": approved,
         "final_report_text": approved_text,
-        "status":            "human_approved" if approved else "human_rejected",
+        "status": "human_approved" if approved else "human_rejected",
     }
 
 
@@ -175,11 +185,12 @@ def node_finalize(state: PipelineState) -> PipelineState:
     return {
         **state,
         "final_report_text": final_text,
-        "status":            "complete",
+        "status": "complete",
     }
 
 
 # ── Routing ───────────────────────────────────────────────────────────────────
+
 
 def route_after_analysis(state: PipelineState) -> str:
     return "end" if state["status"] == "failed" else "continue"
@@ -204,7 +215,8 @@ def route_after_qa(state: PipelineState) -> str:
     if state["retry_count"] < MAX_RETRIES:
         logger.info(
             "QA failed — retrying (%d/%d)",
-            state["retry_count"], MAX_RETRIES,
+            state["retry_count"],
+            MAX_RETRIES,
         )
         return "retry"
 
@@ -218,15 +230,16 @@ def route_after_human(state: PipelineState) -> str:
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
+
 def build_graph(checkpointer=None):
     graph = StateGraph(PipelineState)
 
-    graph.add_node("image_analysis",   node_image_analysis)
+    graph.add_node("image_analysis", node_image_analysis)
     graph.add_node("clinical_context", node_clinical_context)
-    graph.add_node("report_drafting",  node_report_drafting)
-    graph.add_node("qa_validation",    node_qa_validation)
-    graph.add_node("human_review",     node_human_review)
-    graph.add_node("finalize",         node_finalize)
+    graph.add_node("report_drafting", node_report_drafting)
+    graph.add_node("qa_validation", node_qa_validation)
+    graph.add_node("human_review", node_human_review)
+    graph.add_node("finalize", node_finalize)
 
     graph.set_entry_point("image_analysis")
 
@@ -236,7 +249,7 @@ def build_graph(checkpointer=None):
         {"continue": "clinical_context", "end": END},
     )
     graph.add_edge("clinical_context", "report_drafting")
-    graph.add_edge("report_drafting",  "qa_validation")
+    graph.add_edge("report_drafting", "qa_validation")
     graph.add_conditional_edges(
         "qa_validation",
         route_after_qa,
@@ -257,14 +270,15 @@ def build_graph(checkpointer=None):
 
 # ── Public entry points ───────────────────────────────────────────────────────
 
+
 def run_pipeline(
-    png_path:          str,
-    anonymized_id:     str,
-    modality:          str = "CR",
-    hil:               bool = True,
-    thread_id:         str | None = None,
-    existing_findings = None,
-    clinical_note:     str = "",
+    png_path: str,
+    anonymized_id: str,
+    modality: str = "CR",
+    hil: bool = True,
+    thread_id: str | None = None,
+    existing_findings=None,
+    clinical_note: str = "",
 ) -> tuple[PipelineState, str | None]:
     """
     Run the full multi-agent pipeline.
@@ -278,34 +292,37 @@ def run_pipeline(
     thread_id = thread_id or anonymized_id
 
     if hil:
-        conn         = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         checkpointer = SqliteSaver(conn)
-        graph        = build_graph(checkpointer=checkpointer)
-        config       = {"configurable": {"thread_id": thread_id}}
+        graph = build_graph(checkpointer=checkpointer)
+        config = {"configurable": {"thread_id": thread_id}}
     else:
-        graph  = build_graph()
+        graph = build_graph()
         config = {}
 
     initial_state: PipelineState = {
-        "png_path":          png_path,
-        "anonymized_id":     anonymized_id,
-        "modality":          modality,
-        "clinical_note":     clinical_note,
-        "image_findings":    existing_findings,
-        "clinical_context":  None,
-        "report":            None,
-        "validation":        None,
-        "retry_count":       0,
-        "error":             None,
-        "status":            "image_analyzed" if existing_findings else "started",
-        "human_approved":    False,
+        "png_path": png_path,
+        "anonymized_id": anonymized_id,
+        "modality": modality,
+        "clinical_note": clinical_note,
+        "image_findings": existing_findings,
+        "clinical_context": None,
+        "report": None,
+        "validation": None,
+        "retry_count": 0,
+        "error": None,
+        "status": "image_analyzed" if existing_findings else "started",
+        "human_approved": False,
         "final_report_text": "",
     }
 
     logger.info(
         "Starting pipeline | anon_id=%s | modality=%s | hil=%s | has_note=%s | skip_analysis=%s",
-        anonymized_id, modality, hil,
-        bool(clinical_note), existing_findings is not None,
+        anonymized_id,
+        modality,
+        hil,
+        bool(clinical_note),
+        existing_findings is not None,
     )
 
     final_state = graph.invoke(initial_state, config)
@@ -314,25 +331,27 @@ def run_pipeline(
 
 
 def resume_pipeline(
-    thread_id:       str,
+    thread_id: str,
     approved_report: str,
-    approved:        bool = True,
+    approved: bool = True,
 ) -> PipelineState:
     """Resume after radiologist review."""
     load_dotenv("/home/moez/projects/radiology-ai/.env")
 
-    conn         = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
-    graph        = build_graph(checkpointer=checkpointer)
-    config       = {"configurable": {"thread_id": thread_id}}
+    graph = build_graph(checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": thread_id}}
 
     logger.info("Resuming pipeline | thread_id=%s | approved=%s", thread_id, approved)
 
     final_state = graph.invoke(
-        Command(resume={
-            "approved_report": approved_report,
-            "approved":        approved,
-        }),
+        Command(
+            resume={
+                "approved_report": approved_report,
+                "approved": approved,
+            }
+        ),
         config,
     )
 
@@ -342,13 +361,14 @@ def resume_pipeline(
 
 # ── W&B tracking wrapper ──────────────────────────────────────────────────────
 
+
 def run_pipeline_tracked(
-    png_path:          str,
-    anonymized_id:     str,
-    modality:          str = "CR",
-    hil:               bool = True,
-    thread_id:         str = None,
-    clinical_note:     str = "",
+    png_path: str,
+    anonymized_id: str,
+    modality: str = "CR",
+    hil: bool = True,
+    thread_id: str = None,
+    clinical_note: str = "",
 ) -> tuple:
     """Run pipeline with automatic W&B tracking."""
     import time
@@ -356,17 +376,19 @@ def run_pipeline_tracked(
 
     start_time = time.time()
     state, tid = run_pipeline(
-        png_path, anonymized_id, modality,
-        hil, thread_id, clinical_note=clinical_note,
+        png_path,
+        anonymized_id,
+        modality,
+        hil,
+        thread_id,
+        clinical_note=clinical_note,
     )
     latency = time.time() - start_time
 
     validation = state.get("validation")
-    report     = state.get("report")
-    findings   = state.get("image_findings")
-    model_name = os.environ.get("GROQ_MODEL") or os.environ.get(
-        "OLLAMA_MODEL", "unknown"
-    )
+    report = state.get("report")
+    findings = state.get("image_findings")
+    model_name = os.environ.get("GROQ_MODEL") or os.environ.get("OLLAMA_MODEL", "unknown")
 
     metrics = PipelineRunMetrics(
         anonymized_id=anonymized_id,

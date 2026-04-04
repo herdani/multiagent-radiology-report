@@ -17,8 +17,8 @@ Or via Claude Desktop config:
     }
   }
 """
+
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -27,11 +27,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+
 load_dotenv("/home/moez/projects/radiology-ai/.env")
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import Server  # noqa: E402
+from mcp.server.stdio import stdio_server  # noqa: E402
+from mcp.types import Tool, TextContent  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -132,7 +133,7 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls from MCP clients."""
 
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radiology.db")
@@ -160,15 +161,18 @@ async def _get_prior_reports(db, anonymized_id: str, limit: int = 3) -> list[Tex
     """Fetch prior reports for a patient."""
     from api.models.report import Report
 
-    reports = db.query(Report).filter(
-        Report.anonymized_id == anonymized_id
-    ).order_by(Report.created_at.desc()).limit(limit).all()
+    reports = (
+        db.query(Report)
+        .filter(Report.anonymized_id == anonymized_id)
+        .order_by(Report.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
     if not reports:
-        return [TextContent(
-            type="text",
-            text=f"No prior reports found for patient ID: {anonymized_id}"
-        )]
+        return [
+            TextContent(type="text", text=f"No prior reports found for patient ID: {anonymized_id}")
+        ]
 
     result = f"Found {len(reports)} prior report(s) for patient {anonymized_id}:\n\n"
 
@@ -181,7 +185,11 @@ async def _get_prior_reports(db, anonymized_id: str, limit: int = 3) -> list[Tex
         if report.impression:
             result += f"Impression: {report.impression}\n"
         if report.findings:
-            result += f"Findings: {report.findings[:300]}...\n" if len(report.findings) > 300 else f"Findings: {report.findings}\n"
+            result += (
+                f"Findings: {report.findings[:300]}...\n"
+                if len(report.findings) > 300
+                else f"Findings: {report.findings}\n"
+            )
         result += f"Recommendations: {report.recommendations}\n\n"
 
     return [TextContent(type="text", text=result)]
@@ -205,7 +213,9 @@ async def _get_report_by_id(db, report_id: str) -> list[TextContent]:
     return [TextContent(type="text", text=result)]
 
 
-async def _search_reports(db, query: str, modality: str = None, limit: int = 5) -> list[TextContent]:
+async def _search_reports(
+    db, query: str, modality: str = None, limit: int = 5
+) -> list[TextContent]:
     """Search reports by keyword."""
     from api.models.report import Report
     from sqlalchemy import or_
@@ -224,10 +234,7 @@ async def _search_reports(db, query: str, modality: str = None, limit: int = 5) 
     reports = q.order_by(Report.created_at.desc()).limit(limit).all()
 
     if not reports:
-        return [TextContent(
-            type="text",
-            text=f"No reports found matching: '{query}'"
-        )]
+        return [TextContent(type="text", text=f"No reports found matching: '{query}'")]
 
     result = f"Found {len(reports)} report(s) matching '{query}':\n\n"
     for report in reports:
@@ -241,25 +248,24 @@ async def _search_reports(db, query: str, modality: str = None, limit: int = 5) 
 async def _get_patient_summary(db, anonymized_id: str) -> list[TextContent]:
     """Get complete patient radiological history summary."""
     from api.models.report import Report
-    from sqlalchemy import func
 
-    reports = db.query(Report).filter(
-        Report.anonymized_id == anonymized_id
-    ).order_by(Report.created_at.asc()).all()
+    reports = (
+        db.query(Report)
+        .filter(Report.anonymized_id == anonymized_id)
+        .order_by(Report.created_at.asc())
+        .all()
+    )
 
     if not reports:
-        return [TextContent(
-            type="text",
-            text=f"No history found for patient: {anonymized_id}"
-        )]
+        return [TextContent(type="text", text=f"No history found for patient: {anonymized_id}")]
 
-    modalities   = list(set(r.modality for r in reports))
-    urgencies    = list(set(r.urgency_level for r in reports))
-    approved     = sum(1 for r in reports if r.human_approved)
-    first_study  = reports[0].created_at.strftime("%Y-%m-%d")
+    modalities = list(set(r.modality for r in reports))
+    urgencies = list(set(r.urgency_level for r in reports))
+    approved = sum(1 for r in reports if r.human_approved)
+    first_study = reports[0].created_at.strftime("%Y-%m-%d")
     latest_study = reports[-1].created_at.strftime("%Y-%m-%d")
 
-    result  = f"Patient Radiological History Summary\n"
+    result = "Patient Radiological History Summary\n"
     result += f"Patient ID: {anonymized_id}\n"
     result += f"Total studies: {len(reports)}\n"
     result += f"Modalities: {', '.join(modalities)}\n"

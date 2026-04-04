@@ -1,17 +1,18 @@
 import httpx
+
 """
 QA Validation Agent
 --------------------
 Reviews the drafted report for completeness, consistency,
 urgency flags, and potential hallucinations.
 """
-import logging
-import os
-import re
-from dataclasses import dataclass, field
+import logging  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
 
-from agents.image_analysis import ImageFindings
-from agents.report_drafting import RadiologyReport
+from agents.image_analysis import ImageFindings  # noqa: E402
+from agents.report_drafting import RadiologyReport  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -25,26 +26,40 @@ REQUIRED_SECTIONS = [
 
 # only flag if these appear WITHOUT negation nearby
 URGENT_KEYWORDS = [
-    "pneumothorax", "tension", "hemorrhage", "haemorrhage",
-    "infarct", "embolism", "dissection", "rupture",
-    "obstruction", "malignancy", "critical",
+    "pneumothorax",
+    "tension",
+    "hemorrhage",
+    "haemorrhage",
+    "infarct",
+    "embolism",
+    "dissection",
+    "rupture",
+    "obstruction",
+    "malignancy",
+    "critical",
 ]
 
 # negation words that indicate finding is absent
 NEGATION_WORDS = [
-    "no ", "not ", "without ", "absent ", "negative ",
-    "clear of", "no evidence", "unremarkable",
+    "no ",
+    "not ",
+    "without ",
+    "absent ",
+    "negative ",
+    "clear of",
+    "no evidence",
+    "unremarkable",
 ]
 
 
 @dataclass
 class ValidationResult:
-    anonymized_id:        str
-    passed:               bool
-    score:                float
-    issues:               list[str] = field(default_factory=list)
-    warnings:             list[str] = field(default_factory=list)
-    approved_report:      str = ""
+    anonymized_id: str
+    passed: bool
+    score: float
+    issues: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    approved_report: str = ""
     requires_human_review: bool = False
 
 
@@ -64,7 +79,7 @@ def _is_negated(keyword: str, text: str) -> bool:
     if idx == -1:
         return False
     # look at 50 chars before the keyword for negation
-    context = text[max(0, idx - 50):idx].lower()
+    context = text[max(0, idx - 50) : idx].lower()
     return any(neg in context for neg in NEGATION_WORDS)
 
 
@@ -78,8 +93,7 @@ def _check_urgency(
 
     # only flag keywords that are NOT negated
     found_urgent = [
-        kw for kw in URGENT_KEYWORDS
-        if kw in report_lower and not _is_negated(kw, report_lower)
+        kw for kw in URGENT_KEYWORDS if kw in report_lower and not _is_negated(kw, report_lower)
     ]
 
     if found_urgent and report.urgency_level == "routine":
@@ -89,9 +103,7 @@ def _check_urgency(
         )
 
     if image_findings.flagged and report.urgency_level == "routine":
-        warnings.append(
-            "Image analysis flagged findings but report urgency is routine"
-        )
+        warnings.append("Image analysis flagged findings but report urgency is routine")
 
     return warnings
 
@@ -123,14 +135,14 @@ def _clean_llm_list(raw: str) -> list[str]:
         return []
 
     # remove anything inside square brackets (template instructions)
-    raw = re.sub(r'\[.*?\]', '', raw)
+    raw = re.sub(r"\[.*?\]", "", raw)
 
-    items = [i.strip() for i in raw.split(',')]
+    items = [i.strip() for i in raw.split(",")]
     cleaned = []
     for item in items:
         item = item.strip().strip('"').strip("'")
         # skip empty, 'none', or template artifacts
-        if item and item.lower() not in ('none', 'n/a', '') and len(item) > 3:
+        if item and item.lower() not in ("none", "n/a", "") and len(item) > 3:
             cleaned.append(item)
     return cleaned
 
@@ -141,12 +153,12 @@ def _mock_validation(
 ) -> ValidationResult:
     logger.info("Mode: MOCK QA validation | anon_id=%s", report.anonymized_id)
 
-    issues   = _check_completeness(report)
+    issues = _check_completeness(report)
     warnings = _check_urgency(report, image_findings)
     warnings += _check_consistency(report, image_findings)
 
-    passed  = len(issues) == 0
-    score   = max(0.0, min(1.0, 1.0 - len(issues) * 0.2 - len(warnings) * 0.1))
+    passed = len(issues) == 0
+    score = max(0.0, min(1.0, 1.0 - len(issues) * 0.2 - len(warnings) * 0.1))
     requires_human = not passed or len(warnings) > 1 or image_findings.flagged
 
     return ValidationResult(
@@ -223,7 +235,7 @@ clinical concerns as plain text, or write 'none' if there are none."""
     )
 
     message = response.choices[0].message
-    raw     = message.content or ""
+    raw = message.content or ""
     if not raw.strip():
         reasoning = getattr(message, "reasoning", "") or ""
         if "PASSED:" in reasoning:
@@ -231,10 +243,10 @@ clinical concerns as plain text, or write 'none' if there are none."""
             raw = reasoning[idx:]
 
     # parse response
-    passed         = True
-    score          = 0.8
-    issues         = []
-    warnings       = []
+    passed = True
+    score = 0.8
+    issues = []
+    warnings = []
     requires_human = False
 
     for line in raw.splitlines():
@@ -243,7 +255,7 @@ clinical concerns as plain text, or write 'none' if there are none."""
             passed = "true" in line.lower()
         elif line.startswith("SCORE:"):
             try:
-                score = float(re.search(r'[\d.]+', line.replace("SCORE:", "")).group())
+                score = float(re.search(r"[\d.]+", line.replace("SCORE:", "")).group())
             except Exception:
                 score = 0.8
         elif line.startswith("ISSUES:"):
@@ -254,11 +266,11 @@ clinical concerns as plain text, or write 'none' if there are none."""
             requires_human = "true" in line.lower()
 
     # always run rule-based checks on top
-    rule_issues   = _check_completeness(report)
+    rule_issues = _check_completeness(report)
     rule_warnings = _check_urgency(report, image_findings)
     rule_warnings += _check_consistency(report, image_findings)
 
-    issues   = list(dict.fromkeys(issues + rule_issues))
+    issues = list(dict.fromkeys(issues + rule_issues))
     warnings = list(dict.fromkeys(warnings + rule_warnings))
 
     return ValidationResult(

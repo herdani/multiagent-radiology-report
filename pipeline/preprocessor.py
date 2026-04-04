@@ -8,7 +8,7 @@ from pipeline.dicom_loader import DicomScan
 
 logger = logging.getLogger(__name__)
 
-TARGET_SIZE = (512, 512)   # standard input size for vision models
+TARGET_SIZE = (512, 512)  # standard input size for vision models
 
 
 def normalize_pixels(array: np.ndarray) -> np.ndarray:
@@ -36,7 +36,7 @@ def to_png(scan: DicomScan, output_path: str | Path) -> Path:
         mid = pixels.shape[0] // 2
         pixels = pixels[mid]
     elif pixels.ndim == 3 and pixels.shape[-1] in (3, 4):
-        pixels = pixels[:, :, :3]   # drop alpha if present
+        pixels = pixels[:, :, :3]
 
     if pixels.ndim == 2:
         img = Image.fromarray(pixels, mode="L").convert("RGB")
@@ -65,7 +65,7 @@ def preprocess(dicom_path: str | Path, output_dir: str | Path = "data/processed"
 
     return {
         "anonymized_id": scan.anonymized_id,
-        "png_path":      str(saved_path),
-        "modality":      scan.modality,
-        "metadata":      scan.metadata,
+        "png_path": str(saved_path),
+        "modality": scan.modality,
+        "metadata": scan.metadata,
     }

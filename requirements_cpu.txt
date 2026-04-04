@@ -1,0 +1,128 @@
+# --- Agent orchestration ---
+langgraph==1.1.2
+langgraph-checkpoint==4.0.1
+langgraph-checkpoint-sqlite==3.0.3
+langgraph-prebuilt==1.0.8
+langgraph-sdk==0.3.11
+langchain==1.2.12
+langchain-core==1.2.19
+langchain-openai==1.1.11
+langsmith==0.7.17
+
+# --- API ---
+fastapi==0.135.1
+uvicorn==0.41.0
+uvloop==0.22.1
+httptools==0.7.1
+starlette==0.52.1
+pydantic==2.12.5
+pydantic-settings==2.13.1
+pydantic_core==2.41.5
+python-multipart==0.0.22
+watchfiles==1.1.1
+websockets==16.0
+
+# --- Medical imaging ---
+pydicom==3.0.1
+pillow==11.3.0
+numpy==1.26.4
+imageio==2.37.3
+scikit-image==0.26.0
+scipy==1.17.1
+tifffile==2026.3.3
+lazy-loader==0.5
+
+# --- XAI ---
+torchcam==0.4.1
+torchxrayvision==1.4.0
+matplotlib==3.10.8
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.62.1
+kiwisolver==1.5.0
+pyparsing==3.3.2
+
+# --- RAG / vector DB ---
+qdrant-client==1.17.1
+fastembed==0.7.4
+onnxruntime==1.24.3
+huggingface_hub==1.7.1
+tokenizers==0.22.2
+mmh3==5.2.1
+py_rust_stemmers==0.1.5
+loguru==0.7.3
+
+# --- Database ---
+SQLAlchemy==2.0.48
+psycopg2-binary==2.9.11
+aiosqlite==0.22.1
+greenlet==3.3.2
+
+# --- AWS ---
+boto3==1.42.68
+botocore==1.42.68
+s3transfer==0.16.0
+jmespath==1.1.0
+
+# --- MLOps ---
+wandb==0.25.1
+
+# --- Observability ---
+prometheus_client==0.24.1
+
+# --- HTTP client ---
+httpx==0.28.1
+httpcore==1.0.9
+openai==2.28.0
+anyio==4.12.1
+sniffio==1.3.1
+h11==0.16.0
+certifi==2026.2.25
+charset-normalizer==3.4.5
+idna==3.11
+requests==2.32.5
+urllib3==2.6.3
+
+# --- Gradio UI ---
+gradio==6.9.0
+gradio_client==2.3.0
+aiofiles==24.1.0
+ffmpy==1.0.0
+pydub==0.25.1
+safehttpx==0.1.7
+tomlkit==0.13.3
+typer==0.24.1
+
+# --- MCP ---
+mcp==1.26.0
+sse-starlette==3.3.2
+
+# --- Utils ---
+python-dotenv==1.2.2
+packaging==26.0
+typing_extensions==4.15.0
+typing-inspect==0.9.0
+typing-inspection==0.4.2
+annotated-types==0.7.0
+click==8.3.1
+rich==14.3.3
+tqdm==4.67.3
+filelock==3.25.2
+fsspec==2026.2.0
+networkx==3.6.1
+sympy==1.14.0
+mpmath==1.3.0
+PyYAML==6.0.3
+orjson==3.11.7
+python-dateutil==2.9.0.post0
+six==1.17.0
+pytz==2026.1.post1
+tzdata==2025.3
+regex==2026.2.28
+tiktoken==0.12.0
+pandas==2.3.3
+pyarrow==23.0.1
+
+# --- Torch (installed separately in Dockerfile) ---
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu

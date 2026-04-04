@@ -147,7 +147,7 @@ def _ollama_analysis(png_path: str, anonymized_id: str, modality: str) -> ImageF
                 ],
             },
         ],
-        max_tokens=4096,         # enough for thinking + response
+        max_tokens=4096,  # enough for thinking + response
     )
 
     raw = _extract_content(response)
@@ -191,6 +191,7 @@ def _openrouter_analysis(png_path: str, anonymized_id: str, modality: str) -> Im
     raw = _extract_content(response)
     return _parse_response(raw, anonymized_id, modality)
 
+
 def _groq_analysis(png_path: str, anonymized_id: str, modality: str) -> ImageFindings:
     """Cloud inference via Groq — fast, free, vision capable."""
     from openai import OpenAI
@@ -230,6 +231,7 @@ def _groq_analysis(png_path: str, anonymized_id: str, modality: str) -> ImageFin
     raw = response.choices[0].message.content or ""
     return _parse_response(raw, anonymized_id, modality)
 
+
 def run(png_path: str, anonymized_id: str, modality: str = "CR") -> ImageFindings:
     """
     Mode selection priority:
@@ -262,6 +264,7 @@ def run_with_xai(
 
     # start XAI in background thread immediately
     xai_result = {}
+
     def run_xai():
         chest_modalities = ["CR", "DX", "CT"]
         if modality.upper() in chest_modalities:
@@ -281,14 +284,11 @@ def run_with_xai(
     if xai_result.get("pathology_scores"):
         top_findings = sorted(
             xai_result["pathology_scores"].items(),
-            key=lambda x: x[1], reverse=True,
+            key=lambda x: x[1],
+            reverse=True,
         )[:3]
-        score_text = ", ".join(
-            f"{k}: {v:.0%}" for k, v in top_findings if v > 0.1
-        )
+        score_text = ", ".join(f"{k}: {v:.0%}" for k, v in top_findings if v > 0.1)
         if score_text:
-            findings.findings.append(
-                f"TorchXRayVision detection scores: {score_text}"
-            )
+            findings.findings.append(f"TorchXRayVision detection scores: {score_text}")
 
     return findings, xai_result

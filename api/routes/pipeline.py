@@ -26,7 +26,7 @@ async def analyze_scan(
 
     try:
         result = preprocess(dicom_path=tmp_path, output_dir="data/processed")
-        png_path      = result["png_path"]
+        png_path = result["png_path"]
         anonymized_id = result["anonymized_id"]
 
         state, thread_id = run_pipeline(
@@ -67,14 +67,14 @@ async def analyze_scan(
         logger.info("Pipeline complete | report_id=%s", db_report.id)
 
         return {
-            "status":               state.get("status"),
-            "report_id":            db_report.id,
-            "anonymized_id":        anonymized_id,
-            "thread_id":            thread_id,
-            "report_text":          report_obj.report_text,
-            "qa_score":             validation.score if validation else 0,
-            "qa_passed":            validation.passed if validation else False,
-            "urgency_level":        report_obj.urgency_level,
+            "status": state.get("status"),
+            "report_id": db_report.id,
+            "anonymized_id": anonymized_id,
+            "thread_id": thread_id,
+            "report_text": report_obj.report_text,
+            "qa_score": validation.score if validation else 0,
+            "qa_passed": validation.passed if validation else False,
+            "urgency_level": report_obj.urgency_level,
             "requires_human_review": validation.requires_human_review if validation else False,
         }
 

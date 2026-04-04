@@ -4,6 +4,7 @@ Compliance API endpoints
 GDPR and HIPAA management endpoints.
 In production these would require special admin authentication.
 """
+
 import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session

@@ -1,14 +1,11 @@
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
 load_dotenv("/home/moez/projects/radiology-ai/.env")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./data/radiology.db"
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radiology.db")
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 

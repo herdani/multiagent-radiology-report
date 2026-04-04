@@ -14,45 +14,49 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 class ReportCreate(BaseModel):
-    anonymized_id:       str
-    modality:            str
-    report_text:         str
+    anonymized_id: str
+    modality: str
+    report_text: str
     clinical_indication: str = ""
-    technique:           str = ""
-    findings:            str = ""
-    impression:          str = ""
-    recommendations:     str = ""
-    qa_score:            float = 0.0
-    qa_passed:           bool = False
-    urgency_level:       str = "routine"
-    retry_count:         int = 0
-    png_path:            Optional[str] = None
+    technique: str = ""
+    findings: str = ""
+    impression: str = ""
+    recommendations: str = ""
+    qa_score: float = 0.0
+    qa_passed: bool = False
+    urgency_level: str = "routine"
+    retry_count: int = 0
+    png_path: Optional[str] = None
 
 
 class ReportApprove(BaseModel):
     approved_report_text: str
-    approved_by:          str = "radiologist"
+    approved_by: str = "radiologist"
 
 
 class ReportResponse(BaseModel):
-    id:             str
-    anonymized_id:  str
-    modality:       str
-    report_text:    str
-    qa_score:       float
-    qa_passed:      bool
-    urgency_level:  str
+    id: str
+    anonymized_id: str
+    modality: str
+    report_text: str
+    qa_score: float
+    qa_passed: bool
+    urgency_level: str
     human_approved: bool
-    created_at:     datetime
+    created_at: datetime
 
     class Config:
         from_attributes = True
 
 
 def log_action(
-    db, action, anonymized_id,
-    report_id=None, performed_by="system",
-    request=None, details=None,
+    db,
+    action,
+    anonymized_id,
+    report_id=None,
+    performed_by="system",
+    request=None,
+    details=None,
 ):
     entry = AuditLog(
         report_id=report_id,
@@ -89,27 +93,35 @@ def get_report(report_id: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/scan/{anonymized_id}", response_model=list[ReportResponse])
 def get_reports_by_scan(anonymized_id: str, db: Session = Depends(get_db)):
-    return db.query(Report).filter(
-        Report.anonymized_id == anonymized_id
-    ).order_by(Report.created_at.desc()).all()
+    return (
+        db.query(Report)
+        .filter(Report.anonymized_id == anonymized_id)
+        .order_by(Report.created_at.desc())
+        .all()
+    )
 
 
 @router.post("/{report_id}/approve", response_model=ReportResponse)
 def approve_report(
-    report_id: str, data: ReportApprove,
-    request: Request, db: Session = Depends(get_db)
+    report_id: str, data: ReportApprove, request: Request, db: Session = Depends(get_db)
 ):
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
-    report.report_text    = data.approved_report_text
+    report.report_text = data.approved_report_text
     report.human_approved = True
-    report.approved_by    = data.approved_by
-    report.approved_at    = datetime.utcnow()
+    report.approved_by = data.approved_by
+    report.approved_at = datetime.utcnow()
     db.commit()
     db.refresh(report)
-    log_action(db, "approved", report.anonymized_id, report_id=report_id,
-               performed_by=data.approved_by, request=request)
+    log_action(
+        db,
+        "approved",
+        report.anonymized_id,
+        report_id=report_id,
+        performed_by=data.approved_by,
+        request=request,
+    )
     return report
 
 
@@ -124,7 +136,8 @@ def reject_report(report_id: str, request: Request, db: Session = Depends(get_db
 
 @router.get("/")
 def list_reports(
-    skip: int = 0, limit: int = 20,
+    skip: int = 0,
+    limit: int = 20,
     urgency: Optional[str] = None,
     approved: Optional[bool] = None,
     db: Session = Depends(get_db),

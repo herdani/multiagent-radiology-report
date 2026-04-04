@@ -4,6 +4,7 @@ XAI Pipeline
 Grad-CAM heatmap using TorchXRayVision + medical-ai-middleware.
 Clean overlay: only high-attention regions colored, same size as scan.
 """
+
 import logging
 import os
 import threading
@@ -18,7 +19,7 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 _model_cache = None
-_model_lock  = threading.Lock()
+_model_lock = threading.Lock()
 
 
 def _get_model():
@@ -29,7 +30,11 @@ def _get_model():
         if _model_cache is not None:
             return _model_cache
         try:
+            import os
+
+            os.environ["HOME"] = "/tmp"  # redirect ~ to /tmp
             import torchxrayvision as xrv
+
             model = xrv.models.DenseNet(weights="densenet121-res224-all")
             model.eval()
             model = model.cpu()
@@ -49,10 +54,12 @@ def _preprocess_image(png_path: str):
     img_np = np.array(img).astype(np.float32)
     img_np = (img_np / 255.0) * 2048 - 1024
 
-    transform = T.Compose([
-        xrv.datasets.XRayCenterCrop(),
-        xrv.datasets.XRayResizer(224),
-    ])
+    transform = T.Compose(
+        [
+            xrv.datasets.XRayCenterCrop(),
+            xrv.datasets.XRayResizer(224),
+        ]
+    )
     img_tensor = transform(img_np[None, ...])
     img_tensor = torch.from_numpy(img_tensor).unsqueeze(0).cpu()
     return img, img_tensor
@@ -77,11 +84,12 @@ def _clean_overlay(
     orig_np = np.array(orig).astype(np.float32)
 
     # resize CAM to output size
-    cam_resized = np.array(
-        Image.fromarray((cam_np * 255).astype(np.uint8)).resize(
-            output_size, Image.BILINEAR
+    cam_resized = (
+        np.array(
+            Image.fromarray((cam_np * 255).astype(np.uint8)).resize(output_size, Image.BILINEAR)
         )
-    ) / 255.0
+        / 255.0
+    )
 
     # mask — only apply color where attention is above threshold
     mask = cam_resized > threshold
@@ -111,20 +119,16 @@ def _clean_overlay(
 
 
 def generate_heatmap(png_path: str, output_dir: str = "data/xai") -> dict:
-    """
-    Generate Grad-CAM heatmap.
-    Output is same size as original scan (512x512).
-    """
     empty_result = {
-        "heatmap_b64":      None,
-        "heatmap_path":     None,
+        "heatmap_b64": None,
+        "heatmap_path": None,
         "pathology_scores": {},
-        "top_pathology":    "unknown",
-        "xai_method":       "not_available",
+        "top_pathology": "unknown",
+        "xai_method": "not_available",
     }
 
     try:
-        from medical_middleware.xai.gradcam import GradCAM
+        from torchcam.methods import GradCAM
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -134,7 +138,6 @@ def generate_heatmap(png_path: str, output_dir: str = "data/xai") -> dict:
 
         img, img_tensor = _preprocess_image(png_path)
 
-        # get pathology predictions
         with torch.no_grad():
             preds = model(img_tensor).squeeze()
 
@@ -144,59 +147,50 @@ def generate_heatmap(png_path: str, output_dir: str = "data/xai") -> dict:
             if name
         }
 
-        top_idx  = int(torch.sigmoid(preds).argmax())
+        top_idx = int(torch.sigmoid(preds).argmax())
         top_name = model.pathologies[top_idx] or "unknown"
 
         logger.info(
-            "TorchXRayVision | top=%s (%.1f%%) | running GradCAM...",
-            top_name, pathology_scores.get(top_name, 0) * 100,
+            "TorchXRayVision | top=%s (%.1f%%)", top_name, pathology_scores.get(top_name, 0) * 100
         )
 
-        # middleware GradCAM — get raw heatmap
-        target_layer = model.features.denseblock4
-        cam = GradCAM(model, target_layer=target_layer)
-        result = cam.explain(
-            img_tensor,
-            target_class=top_idx,
-            original_image=img,
-            return_base64=False,    # raw heatmap only
-        )
-        cam.remove_hooks()
-        model.zero_grad()
+        # GradCAM via torchcam — no middleware needed
+        cam_extractor = GradCAM(model, target_layer="features.denseblock4")
 
-        # get original PNG size for matching
+        # need gradients for GradCAM
+        img_tensor.requires_grad_(True)
+        out = model(img_tensor)
+        activation_map = cam_extractor(top_idx, out)[0]
+        cam_extractor.remove_hooks()
+
+        cam_np = activation_map.squeeze().numpy()
+        cam_np = (cam_np - cam_np.min()) / (cam_np.max() - cam_np.min() + 1e-8)
+
         original_png = Image.open(png_path)
-        output_size  = original_png.size  # (512, 512)
+        output_size = original_png.size
 
-        # clean overlay — same size as scan, no blue background
         heatmap_b64 = _clean_overlay(
             original_img=img,
-            cam_np=result["heatmap_raw"],
+            cam_np=cam_np,
             output_size=output_size,
             alpha=0.45,
             threshold=0.35,
         )
 
-        heatmap_path = os.path.join(
-            output_dir, Path(png_path).stem + "_heatmap.png"
-        )
+        heatmap_path = os.path.join(output_dir, Path(png_path).stem + "_heatmap.png")
         with open(heatmap_path, "wb") as f:
             f.write(base64.b64decode(heatmap_b64))
 
-        logger.info("Grad-CAM complete | top=%s | size=%s | saved=%s",
-                    top_name, output_size, heatmap_path)
+        logger.info("Grad-CAM complete | top=%s | saved=%s", top_name, heatmap_path)
 
         return {
-            "heatmap_b64":      heatmap_b64,
-            "heatmap_path":     heatmap_path,
+            "heatmap_b64": heatmap_b64,
+            "heatmap_path": heatmap_path,
             "pathology_scores": pathology_scores,
-            "top_pathology":    top_name,
-            "xai_method":       "gradcam_clean",
+            "top_pathology": top_name,
+            "xai_method": "gradcam_torchcam",
         }
 
-    except ImportError:
-        logger.error("medical-ai-middleware not installed")
-        return empty_result
     except Exception as e:
         logger.error("XAI generation failed: %s", e, exc_info=True)
         return {**empty_result, "error": str(e)}
@@ -211,10 +205,10 @@ def generate_heatmap_medgemma(
 ) -> dict:
     """MedGemma attention maps — for all modalities."""
     empty_result = {
-        "heatmap_b64":      None,
-        "heatmap_path":     None,
+        "heatmap_b64": None,
+        "heatmap_path": None,
         "explanation_text": None,
-        "xai_method":       "not_available",
+        "xai_method": "not_available",
     }
 
     try:
@@ -223,12 +217,12 @@ def generate_heatmap_medgemma(
 
         os.makedirs(output_dir, exist_ok=True)
 
-        img         = Image.open(png_path).convert("RGB")
+        img = Image.open(png_path).convert("RGB")
         output_size = img.size
-        transform   = T.Compose([T.Resize((224, 224)), T.ToTensor()])
-        img_tensor  = transform(img).unsqueeze(0)
+        transform = T.Compose([T.Resize((224, 224)), T.ToTensor()])
+        img_tensor = transform(img).unsqueeze(0)
 
-        attn   = AttentionMap(model, model_type="medgemma")
+        attn = AttentionMap(model, model_type="medgemma")
         result = attn.explain(
             img_tensor,
             question=question,
@@ -246,17 +240,15 @@ def generate_heatmap_medgemma(
             threshold=0.25,
         )
 
-        heatmap_path = os.path.join(
-            output_dir, Path(png_path).stem + "_medgemma_heatmap.png"
-        )
+        heatmap_path = os.path.join(output_dir, Path(png_path).stem + "_medgemma_heatmap.png")
         with open(heatmap_path, "wb") as f:
             f.write(base64.b64decode(heatmap_b64))
 
         return {
-            "heatmap_b64":      heatmap_b64,
-            "heatmap_path":     heatmap_path,
+            "heatmap_b64": heatmap_b64,
+            "heatmap_path": heatmap_path,
             "explanation_text": result.get("explanation_text"),
-            "xai_method":       "attention_medgemma_clean",
+            "xai_method": "attention_medgemma_clean",
         }
 
     except Exception as e:
