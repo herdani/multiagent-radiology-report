@@ -42,7 +42,7 @@ try:
         app,
         MiddlewareConfig(
             data_retention_seconds=7776000,  # 90 days
-            require_consent_header=False, 
+            require_consent_header=False,
             rate_limit_predict="10/minute",
             rate_limit_default="30/minute",
             app_name="radiology-ai",
