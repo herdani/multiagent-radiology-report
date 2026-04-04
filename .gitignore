@@ -9,3 +9,8 @@ wandb/
 .coverage
 *.egg-info/
 dist/
+infra/terraform.tfvars
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl
