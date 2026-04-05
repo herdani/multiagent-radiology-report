@@ -56,7 +56,7 @@ The pipeline combines specialized medical vision models, retrieval-augmented gen
 
 - **Agentic multi-agent system** — 4 autonomous agents with tool use, reasoning loops, and state management via LangGraph
 - **Mandatory human oversight** — every report pauses for radiologist review before finalization (EU AI Act Art. 14)
-- **Explainable AI** — Grad-CAM heatmaps via [medical-ai-middleware](https://github.com/moebouassida/medical-ai-middleware) show exactly which image regions drove the model's findings
+- **Explainable AI** — Grad-CAM heatmaps via TorchXRayVision + torchcam show exactly which image regions drove the model's findings
 - **GDPR/HIPAA compliant** — PII stripped on ingest, anonymized IDs throughout, 90-day retention, right to erasure, full audit trail
 - **RAG-grounded reports** — clinical context retrieved from medical literature via Qdrant vector search
 - **Prior patient history** — MCP server exposes PostgreSQL reports to any AI client including Claude Desktop
@@ -76,7 +76,7 @@ The pipeline combines specialized medical vision models, retrieval-augmented gen
 ┌────────────────────────────▼────────────────────────────────────┐
 │                  FastAPI Backend (port 8000)                     │
 │   Reports CRUD · Pipeline trigger · GDPR endpoints · /metrics   │
-│   medical-ai-middleware: rate limiting · consent · sec headers   │
+│   Prometheus metrics · GDPR audit logging · security headers     │
 └────────────────────────────┬────────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────────┐
@@ -128,7 +128,7 @@ Receives the anonymized PNG scan and sends it to a vision-language model for str
 
 **Output:** Structured `ImageFindings` dataclass with findings list, impression, confidence score, and urgency flag.
 
-**XAI:** TorchXRayVision DenseNet (densenet121-res224-all, trained on CheXpert + NIH + MIMIC + PadChest) runs in a background thread simultaneously, scoring 18 chest pathologies and generating Grad-CAM heatmaps via [medical-ai-middleware](https://github.com/moebouassida/medical-ai-middleware). XAI only activates for chest modalities (CR, DX) — skipped for MRI/CT where TorchXRayVision is not applicable. When MedGemma is available, attention maps replace Grad-CAM for all modalities using `AttentionMap(model, model_type="medgemma")`.
+**XAI:** TorchXRayVision DenseNet (densenet121-res224-all, trained on CheXpert + NIH + MIMIC + PadChest) runs in a background thread simultaneously, scoring 18 chest pathologies and generating Grad-CAM heatmaps via torchcam. XAI only activates for chest modalities (CR, DX) — skipped for MRI/CT where TorchXRayVision is not applicable. When MedGemma is available, attention maps replace Grad-CAM for all modalities using `AttentionMap(model, model_type="medgemma")`.
 
 ### Agent 2 — Clinical Context
 
@@ -197,9 +197,9 @@ This satisfies EU AI Act Article 14, clinical governance, and HIPAA human accoun
 | Database | PostgreSQL 16 (RDS in prod) |
 | DICOM processing | pydicom + Pillow |
 | Medical imaging | TorchXRayVision |
-| XAI middleware | [medical-ai-middleware](https://github.com/moebouassida/medical-ai-middleware) |
+| XAI | TorchXRayVision + torchcam |
 | MCP server | Python MCP SDK |
-| Compliance | medical-ai-middleware (GDPR + rate limiting + security headers) |
+| Compliance | Custom GDPR/HIPAA layer (audit logging, retention, erasure) |
 
 ### Infrastructure
 
@@ -250,7 +250,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 pip install -e ".[dev]"
-pip install "medical-ai-middleware[all] @ git+https://github.com/moebouassida/medical-ai-middleware.git"
+# no additional installs needed
 ```
 
 ### 2. Configure environment
@@ -400,7 +400,7 @@ You can then ask Claude: *"What were the findings for the last chest X-ray? Were
 | Art. 5(1)(e) | Storage limitation | Reports auto-deleted after 90 days |
 | Art. 17 | Right to erasure | `DELETE /compliance/erase/{anonymized_id}` |
 | Art. 25 | Privacy by design | Only pixel data + safe metadata sent for inference |
-| Art. 32 | Security | HTTPS, security headers, rate limiting, IP anonymization via medical-ai-middleware |
+| Art. 32 | Security | HTTPS, security headers, rate limiting, IP anonymization |
 
 ### HIPAA
 
@@ -450,10 +450,10 @@ docker compose up prometheus grafana -d
 
 ## Roadmap
 
-### In progress
+### Completed ✅
 - [ ] MedGemma 4b (RTX 2060 / Google Vertex AI) — replaces Groq for vision
-- [ ] Claude Sonnet — replaces Groq for report generation and QA
-- [ ] AWS deployment via Terraform (ECS + RDS + S3 + ECR)
+- [x] Claude Sonnet — report generation and QA (QA score: 0.91) ✅
+- [x] AWS deployment via Terraform (ECS + RDS + S3 + ECR) ✅
 - [ ] MIMIC-CXR dataset (227k chest X-rays) for proper benchmarking
 
 ### Planned
@@ -496,7 +496,7 @@ multiagent-radiology-report/
 ├── pipeline/
 │   ├── dicom_loader.py        # Load + strip PII
 │   ├── preprocessor.py        # Normalize → 512x512 PNG
-│   └── xai.py                 # Grad-CAM via medical-ai-middleware
+│   └── xai.py                 # Grad-CAM via TorchXRayVision + torchcam
 ├── api/
 │   ├── main.py                # FastAPI + middleware setup
 │   ├── compliance.py          # GDPR/HIPAA logic
