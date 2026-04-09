@@ -6,11 +6,12 @@ Mandatory HIL: every report requires radiologist review.
 
 import logging
 import os
+from pathlib import Path
 import gradio as gr
 from dotenv import load_dotenv
 from PIL import Image
 
-load_dotenv("/home/moez/projects/radiology-ai/.env")
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

@@ -11,6 +11,7 @@ Flow:
 import logging
 import os
 import sqlite3
+from pathlib import Path
 from typing import TypedDict
 from dotenv import load_dotenv
 
@@ -286,7 +287,7 @@ def run_pipeline(
     - clinical_note: radiologist context improves report quality
     - hil: always True in production
     """
-    load_dotenv("/home/moez/projects/radiology-ai/.env")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     os.makedirs("data", exist_ok=True)
 
     thread_id = thread_id or anonymized_id
@@ -336,7 +337,7 @@ def resume_pipeline(
     approved: bool = True,
 ) -> PipelineState:
     """Resume after radiologist review."""
-    load_dotenv("/home/moez/projects/radiology-ai/.env")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     checkpointer = SqliteSaver(conn)

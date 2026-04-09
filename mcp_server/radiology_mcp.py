@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 
-load_dotenv("/home/moez/projects/radiology-ai/.env")
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 from mcp.server import Server  # noqa: E402
 from mcp.server.stdio import stdio_server  # noqa: E402

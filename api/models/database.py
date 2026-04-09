@@ -1,9 +1,10 @@
 import os
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
-load_dotenv("/home/moez/projects/radiology-ai/.env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radiology.db")
 
